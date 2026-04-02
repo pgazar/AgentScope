@@ -29,13 +29,15 @@ def run_evaluation(
         raise ValueError("Evaluation inputs cannot be empty — enter at least one query.")
 
     # Auto-detect GT for capstone_rag even when no file uploaded
-    has_gt = gt_file or ("capstone_rag" in agent_folder and
-                          os.path.exists(os.path.join(agent_folder, "ground_truth.csv")))
+    # Auto-detect ground_truth.csv in any agent folder
+    _auto_gt = os.path.join(agent_folder, "ground_truth.csv")
+    has_gt = gt_file or os.path.exists(_auto_gt)
     answers = {
         "agent_type": agent_type,
         "turn_type":  turn_type,
         "has_gt":     "yes" if has_gt else "no",
-        "kb_format":  "pdf" if kb_file else "none",
+        # If GT exists, treat as having a KB so ir_evaluator activates
+        "kb_format":  "pdf" if kb_file else ("markdown" if has_gt else "none"),
     }
     intake = IntakeAgent().run(answers)
     graph  = build_graph(intake["active_tools"])
@@ -46,11 +48,7 @@ def run_evaluation(
         "agent_model":         agent_model,
         "eval_inputs":         eval_inputs,
         "kb_path":             kb_file.name if kb_file else None,
-        "gt_path":             (gt_file.name if gt_file else
-                              os.path.join(agent_folder, "ground_truth.csv")
-                              if "capstone_rag" in agent_folder and
-                              os.path.exists(os.path.join(agent_folder, "ground_truth.csv"))
-                              else None),
+        "gt_path":             gt_file.name if gt_file else (_auto_gt if os.path.exists(_auto_gt) else None),
         "agent_type":          intake["agent_type"],
         "turn_type":           intake["turn_type"],
         "active_tools":        intake["active_tools"],
