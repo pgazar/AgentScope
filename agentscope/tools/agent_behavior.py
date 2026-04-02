@@ -3,6 +3,7 @@ from difflib import SequenceMatcher
 from typing import Optional
 
 from agentscope.orchestrator.state import AgentState
+from agentscope.judge.model import build_model
 
 
 # --------------------------------------------------------------------------- #
@@ -51,7 +52,7 @@ def step_match(actual: list[str], reference: list[str], ordered: bool = True) ->
 # G-Eval scored metrics                                                        #
 # --------------------------------------------------------------------------- #
 
-def argument_correctness(traces: list, model: str) -> float:
+def argument_correctness(traces: list, model_name: str) -> float:
     """
     G-Eval scores whether tool call parameters were correct
     and relevant given the input that triggered the call.
@@ -64,6 +65,7 @@ def argument_correctness(traces: list, model: str) -> float:
     if not tool_calls:
         return 0.0
 
+    model = build_model(model_name)
     metric = GEval(
         name="argument_correctness",
         criteria=PLAN_SUCCESS_CRITERIA["argument_correctness"],
@@ -81,7 +83,7 @@ def argument_correctness(traces: list, model: str) -> float:
     return sum(scores) / len(scores)
 
 
-def plan_success(traces: list, model: str) -> float:
+def plan_success(traces: list, model_name: str) -> float:
     """
     G-Eval scores whether the agent's overall tool sequence was
     coherent and appropriate for the task.
@@ -94,6 +96,7 @@ def plan_success(traces: list, model: str) -> float:
     if not tool_sequence:
         return 0.0
 
+    model = build_model(model_name)
     metric = GEval(
         name="plan_success",
         criteria=PLAN_SUCCESS_CRITERIA["plan_success"],
@@ -108,7 +111,7 @@ def plan_success(traces: list, model: str) -> float:
     return metric.score
 
 
-def handoff_correctness(traces: list, model: str) -> float:
+def handoff_correctness(traces: list, model_name: str) -> float:
     """
     For multi-agent systems only. G-Eval scores whether each handoff
     passed accurate context and the receiving agent acted on it correctly.
@@ -124,6 +127,7 @@ def handoff_correctness(traces: list, model: str) -> float:
         # No handoffs = not applicable; return neutral score
         return 1.0
 
+    model = build_model(model_name)
     metric = GEval(
         name="handoff_correctness",
         criteria=PLAN_SUCCESS_CRITERIA["handoff_correctness"],
@@ -230,7 +234,7 @@ def run(state: AgentState) -> AgentState:
         all_events.extend(trace.events if hasattr(trace, "events") else [])
 
     max_steps = state["config"]["eval"]["max_steps"]
-    model = state["config"]["judge"]["model"]
+    model_name = state["config"]["judge"]["model"]
     agent_type = state["agent_type"]
     expected = state.get("expected_tools", [])
 
@@ -239,13 +243,13 @@ def run(state: AgentState) -> AgentState:
 
     state["behavior_results"] = {
         "tool_accuracy": tool_selection_accuracy(all_events, expected),
-        "plan_success": plan_success(all_events, model),
+        "plan_success": plan_success(all_events, model_name),
         # Heuristic — not ground-truth validated
         "step_budget_efficiency": step_budget_efficiency(len(tool_steps), max_steps),
-        "arg_correctness": argument_correctness(all_events, model),
+        "arg_correctness": argument_correctness(all_events, model_name),
         "convergence": convergence(all_events, max_steps),
         # handoff_correctness covers context passing only (v1 scope)
-        "handoff_correctness": handoff_correctness(all_events, model) if agent_type == "multi_agent" else None,
+        "handoff_correctness": handoff_correctness(all_events, model_name) if agent_type == "multi_agent" else None,
         "step_match": step_match([], []),
         "permission_validation": permission_validation(all_events, schema),
     }

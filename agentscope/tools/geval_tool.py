@@ -1,4 +1,3 @@
-import os
 import warnings
 from deepeval.metrics import GEval, ConversationalGEval
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams, ConversationalTestCase, Turn
@@ -11,22 +10,7 @@ from agentscope.judge.criteria import (
 )
 from agentscope.judge.variance import ScoredMetric, measure_inter_judge_variance, measure_calibration_drift
 from agentscope.orchestrator.state import AgentState
-
-
-def _build_model(model_name: str):
-    """
-    Returns the right model object for DeepEval.
-    Claude models must be wrapped in AnthropicModel — DeepEval routes
-    bare model strings through OpenAI's client.
-    """
-    if "claude" in model_name.lower():
-        from deepeval.models import AnthropicModel
-        return AnthropicModel(
-            model=model_name,
-            api_key=os.environ.get("ANTHROPIC_API_KEY"),
-        )
-    # OpenAI models work as plain strings in DeepEval
-    return model_name
+from agentscope.judge.model import build_model as _build_model
 
 
 def build_single_turn_metrics(model_name: str) -> list[GEval]:
