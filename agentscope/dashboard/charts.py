@@ -7,8 +7,9 @@ def ir_chart(ir_results: dict) -> go.Figure:
     keys   = ["precision_k", "recall_k", "mrr", "ndcg", "hit_rate_k"]
     values = [ir_results.get(k, 0) for k in keys]
     colors = [color_for_metric(v, "ir") for v in values]
-    fig = go.Figure(go.Bar(x=labels, y=values, marker_color=colors))
-    fig.update_layout(title="IR metrics", yaxis_range=[0, 1], height=260)
+    fig = go.Figure(go.Bar(x=labels, y=values, marker_color=colors,
+                              text=[f"{v:.2f}" for v in values], textposition="outside", cliponaxis=False))
+    fig.update_layout(title="IR metrics", yaxis_range=[0, 1.15], height=280)
     return fig
 
 
@@ -17,8 +18,9 @@ def agent_chart(behavior_results: dict) -> go.Figure:
     keys   = ["tool_accuracy", "plan_success", "step_budget_efficiency", "arg_correctness", "convergence"]
     values = [behavior_results.get(k, 0) for k in keys]
     colors = [color_for_metric(v, "agent") for v in values]
-    fig = go.Figure(go.Bar(x=labels, y=values, marker_color=colors))
-    fig.update_layout(title="Agentic metrics", yaxis_range=[0, 1], height=260)
+    fig = go.Figure(go.Bar(x=labels, y=values, marker_color=colors,
+                              text=[f"{v:.2f}" if v is not None else "N/A" for v in values], textposition="outside", cliponaxis=False))
+    fig.update_layout(title="Agentic metrics", yaxis_range=[0, 1.15], height=280)
     return fig
 
 
@@ -42,27 +44,46 @@ def geval_chart(geval_results: dict) -> go.Figure:
         color_for_metric(v, "hallu" if k == "hallucination" else "geval")
         for k, v in scores.items()
     ]
-    fig = go.Figure(go.Bar(x=labels, y=values, marker_color=colors))
-    fig.update_layout(title="Response quality — G-Eval", yaxis_range=[0, 1], height=260)
+    fig = go.Figure(go.Bar(x=labels, y=values, marker_color=colors,
+                              text=[f"{v:.2f}" for v in values], textposition="outside", cliponaxis=False))
+    fig.update_layout(title="Response quality — G-Eval", yaxis_range=[0, 1.15], height=280)
     return fig
 
 
 def cost_chart(cost_results: dict) -> go.Figure:
     labels = ["Cost/query", "Cost/success", "p50 lat.", "p95 lat."]
-    values = [
+    raw = [
         cost_results.get("cost_per_query",   0) or 0,
         cost_results.get("cost_per_success", 0) or 0,
         cost_results.get("p50_latency_s",    0) or 0,
         cost_results.get("p95_latency_s",    0) or 0,
     ]
     colors = [
-        color_for_metric(values[0], "cost_usd"),
-        color_for_metric(values[1], "cost_usd"),
-        color_for_metric(values[2], "latency_s"),
-        color_for_metric(values[3], "latency_s"),
+        color_for_metric(raw[0], "cost_usd"),
+        color_for_metric(raw[1], "cost_usd"),
+        color_for_metric(raw[2], "latency_s"),
+        color_for_metric(raw[3], "latency_s"),
     ]
-    fig = go.Figure(go.Bar(x=labels, y=values, marker_color=colors))
-    fig.update_layout(title="Input agent — cost analysis", height=260)
+    # Format text labels — show actual values even when bars are zero-height
+    text = [
+        f"${raw[0]:.5f}" if raw[0] else "$0.00",
+        f"${raw[1]:.5f}" if raw[1] else "N/A",
+        f"{raw[2]:.3f}s" if raw[2] else "0.000s",
+        f"{raw[3]:.3f}s" if raw[3] else "0.000s",
+    ]
+    fig = go.Figure(go.Bar(
+        x=labels, y=raw,
+        marker_color=colors,
+        text=text,
+        textposition="outside",
+        cliponaxis=False,
+    ))
+    fig.update_layout(
+        title="Input agent — cost analysis",
+        height=300,
+        yaxis=dict(rangemode="tozero"),
+        uniformtext_minsize=10,
+    )
     return fig
 
 
@@ -80,6 +101,7 @@ def adversarial_chart(adversarial_results: dict) -> go.Figure:
         color_for_metric(values[2], "hallu"),  # attack success: inverted
         color_for_metric(values[3], "hallu"),  # violations: inverted
     ]
-    fig = go.Figure(go.Bar(x=labels, y=values, marker_color=colors))
-    fig.update_layout(title="Safety and robustness", yaxis_range=[0, 1], height=260)
+    fig = go.Figure(go.Bar(x=labels, y=values, marker_color=colors,
+                              text=[f"{v:.2f}" for v in values], textposition="outside", cliponaxis=False))
+    fig.update_layout(title="Safety and robustness", yaxis_range=[0, 1.15], height=280)
     return fig
