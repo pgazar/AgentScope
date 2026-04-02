@@ -1,3 +1,4 @@
+import os
 import uuid
 import logging
 import gradio as gr
@@ -27,10 +28,13 @@ def run_evaluation(
     if not eval_inputs:
         raise ValueError("Evaluation inputs cannot be empty — enter at least one query.")
 
+    # Auto-detect GT for capstone_rag even when no file uploaded
+    has_gt = gt_file or ("capstone_rag" in agent_folder and
+                          os.path.exists(os.path.join(agent_folder, "ground_truth.csv")))
     answers = {
         "agent_type": agent_type,
         "turn_type":  turn_type,
-        "has_gt":     "yes" if gt_file else "no",
+        "has_gt":     "yes" if has_gt else "no",
         "kb_format":  "pdf" if kb_file else "none",
     }
     intake = IntakeAgent().run(answers)
@@ -42,7 +46,11 @@ def run_evaluation(
         "agent_model":         agent_model,
         "eval_inputs":         eval_inputs,
         "kb_path":             kb_file.name if kb_file else None,
-        "gt_path":             gt_file.name if gt_file else None,
+        "gt_path":             (gt_file.name if gt_file else
+                              os.path.join(agent_folder, "ground_truth.csv")
+                              if "capstone_rag" in agent_folder and
+                              os.path.exists(os.path.join(agent_folder, "ground_truth.csv"))
+                              else None),
         "agent_type":          intake["agent_type"],
         "turn_type":           intake["turn_type"],
         "active_tools":        intake["active_tools"],

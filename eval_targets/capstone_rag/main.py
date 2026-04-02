@@ -2,8 +2,8 @@
 AgentScope adapter for capstone-rag.
 
 Exposes a standard run(query) -> str callable that AgentScope's AgentRunner
-can load, and a convert_trace() helper that maps capstone-rag's step dict
-format into AgentScope TraceEvent objects so trajectory metrics work correctly.
+can load. Also patches AgentRunner post-run to inject proper trace events
+(retrieval docs for IR metrics, latency for cost metrics).
 """
 import sys
 import os
@@ -15,12 +15,10 @@ CAPSTONE_ROOT = os.path.abspath(
 )
 load_dotenv(os.path.join(CAPSTONE_ROOT, ".env"))
 
-# Make capstone-rag importable
 if CAPSTONE_ROOT not in sys.path:
     sys.path.insert(0, CAPSTONE_ROOT)
 
 from src.agent.react_agent import run_agent  # noqa: E402
-
 
 DEFAULT_CONFIG = {
     "retrieval_mode": os.getenv("RETRIEVAL_MODE", "hybrid"),
@@ -32,55 +30,75 @@ DEFAULT_CONFIG = {
     "guarded_mode":   False,
 }
 
+# Store last result so AgentRunner can inject events after calling run()
+_last_result: dict = {}
+
 
 def run(query: str) -> str:
     """
     Standard AgentScope entry point.
-    Runs the capstone-rag ReAct agent and returns the final answer string.
+    Stores the full capstone-rag result so inject_trace_events() can
+    backfill retrieval docs and latency into the AgentTrace.
     """
+    global _last_result
     result = run_agent(query, config=DEFAULT_CONFIG)
+    _last_result = result
     return result.get("final_answer", "[no answer]")
 
 
-def run_with_trace(query: str) -> dict:
-    """Returns full capstone-rag result dict for trace conversion."""
-    return run_agent(query, config=DEFAULT_CONFIG)
-
-
-def convert_trace(capstone_result: dict) -> list:
+def inject_trace_events(trace) -> None:
     """
-    Converts a capstone-rag result dict into AgentScope TraceEvent-compatible
-    dicts for AgentRunner._normalize().
+    Called after AgentRunner.run() to backfill events that capstone-rag
+    produces but the LangChain callback system never sees:
+      - retrieval events (doc keys) → enables IR metrics
+      - llm_end latency             → enables cost/latency metrics
+      - token estimate              → enables cost metrics
     """
-    events = []
+    from agentscope.runner import TraceEvent
 
-    for step in capstone_result.get("steps", []):
+    if not _last_result:
+        return
+
+    new_events = []
+    steps = _last_result.get("steps", [])
+
+    for step in steps:
         action = step.get("action", "")
         if action in ("final_answer", "guardrail_block"):
             continue
 
-        events.append({
-            "type":  "tool_start",
-            "tool":  action,
-            "input": step.get("args", {}),
-        })
+        new_events.append(TraceEvent(
+            event_type="tool_start",
+            tool_name=action,
+            tool_args=step.get("args", {}),
+        ))
 
-        # Emit retrieval event so IR metrics can score retrieved doc keys
         if action == "rag_retrieve":
-            events.append({
-                "type":       "retrieval",
-                "docs":       step.get("citations", []),
-                "latency_ms": 0.0,
-            })
+            # Citations are the retrieved doc keys — needed for IR metrics
+            new_events.append(TraceEvent(
+                event_type="retrieval",
+                retrieval_docs=step.get("citations", []),
+            ))
 
-        events.append({
-            "type":   "tool_end",
-            "output": step.get("observation", ""),
-        })
+        new_events.append(TraceEvent(
+            event_type="tool_end",
+            tool_output=step.get("observation", ""),
+        ))
 
-    # Wrap one llm_start/llm_end for total run latency
-    latency_ms = capstone_result.get("total_latency_ms", 0.0)
-    events.insert(0, {"type": "llm_start", "prompt_tokens": 0})
-    events.append({"type": "llm_end", "completion_tokens": 0, "latency_ms": latency_ms})
+    # Estimate tokens from message count (capstone-rag doesn't expose exact counts)
+    # ~800 tokens input + ~300 tokens output per step is a conservative estimate
+    n_steps = max(len(steps), 1)
+    latency_ms = _last_result.get("total_latency_ms", 0.0)
 
-    return events
+    new_events.insert(0, TraceEvent(
+        event_type="llm_start",
+        prompt_tokens=800 * n_steps,
+    ))
+    new_events.append(TraceEvent(
+        event_type="llm_end",
+        completion_tokens=300 * n_steps,
+        latency_ms=latency_ms,
+    ))
+
+    trace.events = new_events
+    trace.total_latency_ms = latency_ms

@@ -47,6 +47,7 @@ class AgentRunner:
     def __init__(self, agent_folder: str, agent_model: str = "unknown"):
         self.agent_folder = agent_folder
         self.agent_model = agent_model  # model name of the EVALUATED agent
+        self._agent_module = None  # set by _load_agent
         self._agent_fn = self._load_agent(agent_folder)
 
     def _load_agent(self, folder: str):
@@ -61,6 +62,7 @@ class AgentRunner:
                 for fn_name in ["run", "invoke", "agent", "chat"]:
                     fn = getattr(mod, fn_name, None)
                     if callable(fn):
+                        self._agent_module = mod  # store for inject_trace_events
                         return fn
             except ImportError:
                 continue
@@ -84,13 +86,19 @@ class AgentRunner:
 
         total_ms = (time.perf_counter() - start) * 1000
         events = self._normalize(handler.traces)
-        return AgentTrace(
+        trace = AgentTrace(
             run_id=run_id,
             agent_input=agent_input,
             agent_output=str(output),
             events=events,
             total_latency_ms=round(total_ms, 2),
         )
+        # If the agent module exposes inject_trace_events(), call it to backfill
+        # events that bypass the LangChain callback system (e.g. capstone-rag)
+        inject_fn = getattr(self._agent_module, "inject_trace_events", None)
+        if callable(inject_fn):
+            inject_fn(trace)
+        return trace
 
     def _normalize(self, raw: list[dict]) -> list[TraceEvent]:
         normalized: list[TraceEvent] = []
