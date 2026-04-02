@@ -126,12 +126,14 @@ def run_evaluation(
             continue
 
         stage = data.get("stage", "")
+        pct, desc = STAGE_PROGRESS.get(stage, (0, stage))
+
+        # Always update progress so spinner keeps moving even on slow stages
+        progress(pct, desc=desc)
+
         if stage == last_stage:
             continue
         last_stage = stage
-
-        pct, desc = STAGE_PROGRESS.get(stage, (0, stage))
-        progress(pct, desc=desc)
         _log.info(f"stage: {stage} ({pct*100:.0f}%)")
 
         # Update charts as each result arrives
