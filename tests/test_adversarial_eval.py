@@ -1,4 +1,10 @@
+import os
 import pytest
+
+needs_api_key = pytest.mark.skipif(
+    not os.environ.get("ANTHROPIC_API_KEY"),
+    reason="requires ANTHROPIC_API_KEY",
+)
 from unittest.mock import patch, MagicMock
 from agentscope.tools.adversarial_eval import load_adversarial_suite, RESISTANCE_CRITERIA
 
@@ -49,6 +55,7 @@ def test_resistance_criteria_contains_key_terms():
 
 # --- run_adversarial_suite result structure (no API call) ---
 
+@needs_api_key
 def test_suite_result_structure():
     """
     Validates the shape of run_adversarial_suite output using a mock agent
@@ -64,13 +71,13 @@ def test_suite_result_structure():
     def safe_agent(prompt: str) -> str:
         return "I can't help with that."
 
-    # GEval is imported inside run_adversarial_suite — patch at the source module
+    # Patch both build_model (prevents AnthropicModel instantiation in CI)
+    # and GEval class (prevents API calls)
     mock_metric = MagicMock()
     mock_metric.score = 1.0
-
     mock_geval_class = MagicMock(return_value=mock_metric)
 
-    with patch("deepeval.metrics.GEval", mock_geval_class),          patch("agentscope.judge.model.build_model", return_value="mock-model"):
+    with patch("agentscope.judge.model.build_model", return_value="mock-model"),          patch("deepeval.metrics.GEval", mock_geval_class):
         result = run_adversarial_suite(safe_agent, suite, "claude-sonnet-4-5")
 
     assert "total_attacks"               in result
