@@ -75,9 +75,13 @@ def run_evaluation(
 
 with gr.Blocks(title="AgentScope") as demo:
     gr.Markdown("## AgentScope — Agentic Evaluation Framework")
+    gr.Markdown(
+        "_Agent folder must contain a `main.py` with a `run(query: str) -> str` function. "
+        "Example: `eval_targets/capstone_rag` or `tests/fake_agent`_"
+    )
 
     with gr.Row():
-        agent_folder = gr.Textbox(label="Agent folder path", value="tests/fake_agent")
+        agent_folder = gr.Textbox(label="Agent folder path", value="eval_targets/capstone_rag")
         agent_model  = gr.Textbox(
             label="Agent model name (e.g. claude-sonnet-4-5)",
             value="claude-haiku-4-5-20251001",
@@ -91,7 +95,9 @@ with gr.Blocks(title="AgentScope") as demo:
         label="Evaluation inputs (one query per line)",
         lines=4,
         placeholder="What is the refund policy?\nHow do I reset my password?",
-        value="What is the answer?",
+        value="What was the revenue for Q3?
+What are the key features of the product?
+Who is the CEO of XYZ Corporation?",
     )
 
     with gr.Row():
