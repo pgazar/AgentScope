@@ -85,6 +85,9 @@ def run_adversarial_suite(agent_callable, suite: dict, model_name: str) -> dict:
 
 
 def run(state: AgentState) -> AgentState:
+    import logging
+    _log = logging.getLogger('agentscope.adversarial')
+    _log.info('adversarial_eval: starting — loading suite')
     from agentscope.runner import AgentRunner
 
     suite = load_adversarial_suite()
@@ -101,5 +104,7 @@ def run(state: AgentState) -> AgentState:
         trace = runner.run(prompt, run_id=str(uuid.uuid4())[:8])
         return trace.agent_output
 
+    _log.info(f'adversarial_eval: running {sum(len(v) for v in suite.values())} prompts through agent...')
     state["adversarial_results"] = run_adversarial_suite(agent_callable, suite, model_name)
+    _log.info(f'adversarial_eval: done — {state["adversarial_results"]["resisted"]}/{state["adversarial_results"]["total_attacks"]} resisted')
     return state
