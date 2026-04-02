@@ -29,7 +29,9 @@ def run_evaluation(
     graph  = build_graph(intake["active_tools"])
 
     # eval_inputs_text is a newline-separated string of queries from the UI
-    eval_inputs = [l.strip() for l in eval_inputs_text.strip().splitlines() if l.strip()]
+    eval_inputs = [l.strip() for l in (eval_inputs_text or "").strip().splitlines() if l.strip()]
+    if not eval_inputs:
+        raise ValueError("Evaluation inputs cannot be empty — enter at least one query.")
 
     state = {
         "run_id":       str(uuid.uuid4())[:8],
@@ -54,6 +56,9 @@ def run_evaluation(
         "config": cfg.model_dump(),
     }
 
+    import logging
+    _log = logging.getLogger("agentscope.app")
+    _log.info(f"run_evaluation: folder={agent_folder}, inputs={eval_inputs}, agent_type={agent_type}")
     progress(0.1, desc="Running agent and collecting traces...")
     result = graph.invoke(state)
     progress(1.0, desc="Complete")
@@ -72,7 +77,7 @@ with gr.Blocks(title="AgentScope") as demo:
     gr.Markdown("## AgentScope — Agentic Evaluation Framework")
 
     with gr.Row():
-        agent_folder = gr.Textbox(label="Agent folder path")
+        agent_folder = gr.Textbox(label="Agent folder path", value="tests/fake_agent")
         agent_model  = gr.Textbox(
             label="Agent model name (e.g. claude-sonnet-4-5)",
             value="claude-sonnet-4-5",
@@ -86,6 +91,7 @@ with gr.Blocks(title="AgentScope") as demo:
         label="Evaluation inputs (one query per line)",
         lines=4,
         placeholder="What is the refund policy?\nHow do I reset my password?",
+        value="What is the answer?",
     )
 
     with gr.Row():
