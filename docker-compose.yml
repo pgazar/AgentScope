@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_PASSWORD: agentscope
+      POSTGRES_DB: agentscope
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  agentscope:
+    build: .
+    ports:
+      - "7860:7860"
+      - "8000:8000"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      DATABASE_URL: postgresql://postgres:agentscope@postgres:5432/agentscope
+    volumes:
+      - ./outputs:/app/outputs
+      - ./config.yaml:/app/config.yaml
+    depends_on:
+      - postgres
+    command: python -m agentscope.dashboard.app
+
+volumes:
+  pgdata:
