@@ -2,10 +2,11 @@ import numpy as np
 from agentscope.orchestrator.state import AgentState
 
 MODEL_PRICING = {
-    "claude-sonnet-4-5": {"input": 3.00 / 1e6, "output": 15.00 / 1e6},
-    "claude-opus-4-6":   {"input": 15.00 / 1e6, "output": 75.00 / 1e6},
-    "gpt-4o":            {"input": 5.00 / 1e6,  "output": 15.00 / 1e6},
-    "gpt-4o-mini":       {"input": 0.15 / 1e6,  "output": 0.60 / 1e6},
+    "claude-haiku-4-5-20251001": {"input": 0.80 / 1e6, "output": 4.00 / 1e6},  # cheapest
+    "claude-sonnet-4-5":         {"input": 3.00 / 1e6, "output": 15.00 / 1e6},
+    "claude-opus-4-6":           {"input": 15.00 / 1e6, "output": 75.00 / 1e6},
+    "gpt-4o":                    {"input": 5.00 / 1e6,  "output": 15.00 / 1e6},
+    "gpt-4o-mini":               {"input": 0.15 / 1e6,  "output": 0.60 / 1e6},
 }
 
 

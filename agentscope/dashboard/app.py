@@ -80,7 +80,7 @@ with gr.Blocks(title="AgentScope") as demo:
         agent_folder = gr.Textbox(label="Agent folder path", value="tests/fake_agent")
         agent_model  = gr.Textbox(
             label="Agent model name (e.g. claude-sonnet-4-5)",
-            value="claude-sonnet-4-5",
+            value="claude-haiku-4-5-20251001",
         )
 
     with gr.Row():

@@ -1,6 +1,6 @@
 judge:
   backend: claude
-  model: claude-sonnet-4-5
+  model: claude-haiku-4-5-20251001   # cheapest Claude — swap back to claude-sonnet-4-5 for production
   temperature: 0
   max_tokens: 512
 
