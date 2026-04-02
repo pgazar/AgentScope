@@ -1,10 +1,22 @@
 import uuid
+import logging
+import importlib
 import gradio as gr
 
 from agentscope.dashboard.charts import ir_chart, agent_chart, geval_chart, cost_chart, adversarial_chart
-from agentscope.orchestrator.graph import build_graph
 from agentscope.intake.intake_agent import IntakeAgent
 from agentscope.config import load_config
+from agentscope.runner import AgentRunner
+
+_log = logging.getLogger("agentscope.app")
+logging.basicConfig(level=logging.INFO)
+
+EMPTY_PLOTS = (None, None, None, None, None)
+
+
+def _run_node(module_path: str, fn_name: str, state: dict) -> dict:
+    mod = importlib.import_module(module_path)
+    return getattr(mod, fn_name)(state)
 
 
 def run_evaluation(
@@ -19,6 +31,10 @@ def run_evaluation(
 ):
     cfg = load_config()
 
+    eval_inputs = [l.strip() for l in (eval_inputs_text or "").strip().splitlines() if l.strip()]
+    if not eval_inputs:
+        raise ValueError("Evaluation inputs cannot be empty — enter at least one query.")
+
     answers = {
         "agent_type": agent_type,
         "turn_type":  turn_type,
@@ -26,25 +42,19 @@ def run_evaluation(
         "kb_format":  "pdf" if kb_file else "none",
     }
     intake = IntakeAgent().run(answers)
-    graph  = build_graph(intake["active_tools"])
-
-    # eval_inputs_text is a newline-separated string of queries from the UI
-    eval_inputs = [l.strip() for l in (eval_inputs_text or "").strip().splitlines() if l.strip()]
-    if not eval_inputs:
-        raise ValueError("Evaluation inputs cannot be empty — enter at least one query.")
 
     state = {
-        "run_id":       str(uuid.uuid4())[:8],
-        "agent_folder": agent_folder,
-        "agent_model":  agent_model,
-        "eval_inputs":  eval_inputs,
-        "kb_path":      kb_file.name if kb_file else None,
-        "gt_path":      gt_file.name if gt_file else None,
-        "agent_type":   intake["agent_type"],
-        "turn_type":    intake["turn_type"],
-        "active_tools": intake["active_tools"],
-        "expected_tools": [],
-        "traces":       [],
+        "run_id":              str(uuid.uuid4())[:8],
+        "agent_folder":        agent_folder,
+        "agent_model":         agent_model,
+        "eval_inputs":         eval_inputs,
+        "kb_path":             kb_file.name if kb_file else None,
+        "gt_path":             gt_file.name if gt_file else None,
+        "agent_type":          intake["agent_type"],
+        "turn_type":           intake["turn_type"],
+        "active_tools":        intake["active_tools"],
+        "expected_tools":      [],
+        "traces":              [],
         "baseline_geval_scores": {},
         "ir_results":          None,
         "behavior_results":    None,
@@ -53,18 +63,85 @@ def run_evaluation(
         "adversarial_results": None,
         "synth_results":       None,
         "final_report":        None,
-        "config": cfg.model_dump(),
+        "config":              cfg.model_dump(),
     }
 
-    import logging
-    _log = logging.getLogger("agentscope.app")
     _log.info(f"run_evaluation: folder={agent_folder}, inputs={eval_inputs}, agent_type={agent_type}")
-    progress(0.1, desc="Running agent and collecting traces...")
-    result = graph.invoke(state)
-    progress(1.0, desc="Complete")
 
-    report = result["final_report"]["eval_results"]
-    return (
+    # Yield empty plots immediately so panels appear while we work
+    yield EMPTY_PLOTS
+
+    # --- Step 1: run agent ---
+    progress(0.05, desc="Running agent...")
+    from agentscope.orchestrator.graph import _run_agent
+    state.update(_run_agent(state))
+    _log.info(f"run_agent done — {len(state['traces'])} traces")
+
+    # --- Step 2: synth_gen (optional) ---
+    if "synth_gen" in intake["active_tools"]:
+        progress(0.12, desc="Generating synthetic Q&A pairs...")
+        state.update(_run_node("agentscope.tools.synth_gen", "run", state))
+
+    # --- Step 3: IR evaluator → render Panel 1 immediately ---
+    if "ir_evaluator" in intake["active_tools"]:
+        progress(0.20, desc="Scoring retrieval (IR)...")
+        state.update(_run_node("agentscope.tools.ir_evaluator", "run", state))
+        yield (
+            ir_chart(state["ir_results"] or {}),
+            None, None, None, None,
+        )
+    else:
+        yield EMPTY_PLOTS  # keep panels blank if IR not active
+
+    # --- Step 4: agent behavior → render Panel 2 ---
+    progress(0.35, desc="Scoring agent behavior...")
+    state.update(_run_node("agentscope.tools.agent_behavior", "run", state))
+    yield (
+        ir_chart(state["ir_results"] or {}),
+        agent_chart(state["behavior_results"] or {}),
+        None, None, None,
+    )
+
+    # --- Step 5: adversarial eval (runs before geval — no LLM wait) ---
+    progress(0.50, desc="Running adversarial evaluation...")
+    state.update(_run_node("agentscope.tools.adversarial_eval", "run", state))
+    yield (
+        ir_chart(state["ir_results"] or {}),
+        agent_chart(state["behavior_results"] or {}),
+        None, None,
+        adversarial_chart(state["adversarial_results"] or {}),
+    )
+
+    # --- Step 6: G-Eval → render Panel 3 (longest step) ---
+    progress(0.65, desc="G-Eval scoring (LLM judge)...")
+    state.update(_run_node("agentscope.tools.geval_tool", "run", state))
+    yield (
+        ir_chart(state["ir_results"] or {}),
+        agent_chart(state["behavior_results"] or {}),
+        geval_chart(state["geval_results"] or {}),
+        None,
+        adversarial_chart(state["adversarial_results"] or {}),
+    )
+
+    # --- Step 7: cost analyzer → render Panel 4 ---
+    progress(0.85, desc="Computing cost metrics...")
+    state.update(_run_node("agentscope.tools.cost_analyzer", "run", state))
+    yield (
+        ir_chart(state["ir_results"] or {}),
+        agent_chart(state["behavior_results"] or {}),
+        geval_chart(state["geval_results"] or {}),
+        cost_chart(state["cost_results"] or {}),
+        adversarial_chart(state["adversarial_results"] or {}),
+    )
+
+    # --- Step 8: compile report ---
+    progress(0.95, desc="Writing report...")
+    state.update(_run_node("agentscope.report.compiler", "run_compiler", state))
+    progress(1.0, desc="Done ✓")
+
+    # Final yield with all panels populated
+    report = state["final_report"]["eval_results"]
+    yield (
         ir_chart(report["ir"]          or {}),
         agent_chart(report["behavior"] or {}),
         geval_chart(report["geval"]    or {}),
@@ -113,15 +190,15 @@ with gr.Blocks(title="AgentScope") as demo:
     run_btn = gr.Button("Run evaluation", variant="primary")
 
     with gr.Row():
-        ir_plot    = gr.Plot(label="IR metrics")
-        agent_plot = gr.Plot(label="Agentic metrics")
+        ir_plot    = gr.Plot(label="1 — IR metrics")
+        agent_plot = gr.Plot(label="2 — Agentic metrics")
 
     with gr.Row():
-        geval_plot = gr.Plot(label="Response quality")
-        cost_plot  = gr.Plot(label="Cost analysis")
+        geval_plot = gr.Plot(label="3 — Response quality")
+        cost_plot  = gr.Plot(label="4 — Cost analysis")
 
     with gr.Row():
-        adv_plot = gr.Plot(label="Safety and robustness")
+        adv_plot = gr.Plot(label="5 — Safety and robustness")
 
     run_btn.click(
         run_evaluation,
