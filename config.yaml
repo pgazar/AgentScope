@@ -1,0 +1,25 @@
+judge:
+  backend: claude
+  model: claude-sonnet-4-5
+  temperature: 0
+  max_tokens: 512
+
+eval:
+  k: 5
+  max_steps: 10
+  ir_green: 0.70
+  ir_orange: 0.40
+  agent_green: 0.80
+  agent_orange: 0.60
+  geval_green: 0.80
+  geval_orange: 0.60
+  hallu_green: 0.10
+  hallu_orange: 0.25
+  cost_green: 0.020
+  cost_orange: 0.050
+  latency_green: 2.0
+  latency_orange: 5.0
+  # Evaluation pipeline cost limits
+  max_synth_pairs: 50
+  max_geval_responses: 100
+  eval_budget_usd: 2.00
