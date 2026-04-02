@@ -1,6 +1,9 @@
 import time
 import functools
 from typing import Any
+from uuid import UUID
+
+from langchain_core.callbacks.base import BaseCallbackHandler
 
 
 def _get(d: dict, *keys, default=None):
@@ -11,14 +14,23 @@ def _get(d: dict, *keys, default=None):
     return default
 
 
-class AgentScopeCallbackHandler:
+class AgentScopeCallbackHandler(BaseCallbackHandler):
     """Mode A: zero-code integration for LangChain/LangGraph agents."""
 
     def __init__(self):
+        super().__init__()
         self.traces: list[dict] = []
         self._step_start: dict[str, float] = {}
 
-    def on_tool_start(self, serialized: dict, input_str: Any, **kwargs):
+    def on_tool_start(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
         tool_name = _get(serialized, "name", "id", "tool_name", default="unknown_tool")
         self._step_start[tool_name] = time.perf_counter()
         self.traces.append({
@@ -28,13 +40,28 @@ class AgentScopeCallbackHandler:
             "ts": time.time(),
         })
 
-    def on_tool_end(self, output: Any, **kwargs):
+    def on_tool_end(
+        self,
+        output: Any,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
         self.traces.append({
             "type": "tool_end",
             "output": str(output),
         })
 
-    def on_llm_start(self, serialized: dict, prompts: list[str], **kwargs):
+    def on_llm_start(
+        self,
+        serialized: dict[str, Any],
+        prompts: list[str],
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
         model = _get(serialized, "name", "model_name", "model", default="unknown")
         self._step_start["llm"] = time.perf_counter()
         self.traces.append({
@@ -44,7 +71,14 @@ class AgentScopeCallbackHandler:
             "prompt_tokens": sum(len(p.split()) for p in prompts),
         })
 
-    def on_llm_end(self, response: Any, **kwargs):
+    def on_llm_end(
+        self,
+        response: Any,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
         lat_ms = (time.perf_counter() - self._step_start.pop("llm", time.perf_counter())) * 1000
         raw = response.__dict__ if hasattr(response, "__dict__") else {}
         usage = _get(raw, "llm_output", "usage_metadata", default={}) or {}
