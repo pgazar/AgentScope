@@ -68,7 +68,7 @@ def run(state: AgentState) -> AgentState:
         test_cases.append(LLMTestCase(
             input=r["input"],
             actual_output=r["output"],
-            retrieval_context=r["context"] if r["context"] else None,
+            retrieval_context=r["context"] if r["context"] else [],
         ))
 
     scores: dict[str, list[float]] = {}
