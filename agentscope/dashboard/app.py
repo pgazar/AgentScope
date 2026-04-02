@@ -1,22 +1,49 @@
 import uuid
+import json
+import os
+import sys
+import time
+import tempfile
+import subprocess
 import logging
-import importlib
 import gradio as gr
 
 from agentscope.dashboard.charts import ir_chart, agent_chart, geval_chart, cost_chart, adversarial_chart
 from agentscope.intake.intake_agent import IntakeAgent
 from agentscope.config import load_config
-from agentscope.runner import AgentRunner
 
-_log = logging.getLogger("agentscope.app")
 logging.basicConfig(level=logging.INFO)
+_log = logging.getLogger("agentscope.app")
 
-EMPTY_PLOTS = (None, None, None, None, None)
+AGENTSCOPE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RUNNER_SCRIPT   = os.path.join(AGENTSCOPE_ROOT, "agentscope", "dashboard", "runner_subprocess.py")
 
+# Env files to pass to subprocess
+ENV_FILES = [
+    os.path.join(AGENTSCOPE_ROOT, ".env"),
+    "/Users/pegahzargarian/projects/MCP-1/workspace/capstone-rag/.env",
+]
 
-def _run_node(module_path: str, fn_name: str, state: dict) -> dict:
-    mod = importlib.import_module(module_path)
-    return getattr(mod, fn_name)(state)
+EMPTY = (None, None, None, None, None)
+
+STAGE_PROGRESS = {
+    "starting":         (0.02, "Starting..."),
+    "running_agent":    (0.08, "Running agent on queries..."),
+    "agent_done":       (0.18, "Agent done — traces collected"),
+    "synth_gen":        (0.25, "Generating synthetic Q&A pairs..."),
+    "ir_evaluator":     (0.32, "Scoring retrieval (IR metrics)..."),
+    "ir_done":          (0.38, "IR metrics done"),
+    "agent_behavior":   (0.42, "Scoring agent behavior..."),
+    "behavior_done":    (0.52, "Behavior metrics done"),
+    "adversarial_eval": (0.56, "Running adversarial evaluation..."),
+    "adversarial_done": (0.68, "Adversarial done"),
+    "geval":            (0.72, "G-Eval LLM judge scoring..."),
+    "geval_done":       (0.88, "G-Eval done"),
+    "cost_analyzer":    (0.90, "Computing cost & latency..."),
+    "cost_done":        (0.94, "Cost done"),
+    "compile_report":   (0.96, "Writing report..."),
+    "done":             (1.00, "Complete ✓"),
+}
 
 
 def run_evaluation(
@@ -29,19 +56,17 @@ def run_evaluation(
     turn_type: str,
     progress=gr.Progress(),
 ):
-    cfg = load_config()
-
     eval_inputs = [l.strip() for l in (eval_inputs_text or "").strip().splitlines() if l.strip()]
     if not eval_inputs:
         raise ValueError("Evaluation inputs cannot be empty — enter at least one query.")
 
-    answers = {
+    cfg     = load_config()
+    intake  = IntakeAgent().run({
         "agent_type": agent_type,
         "turn_type":  turn_type,
         "has_gt":     "yes" if gt_file else "no",
         "kb_format":  "pdf" if kb_file else "none",
-    }
-    intake = IntakeAgent().run(answers)
+    })
 
     state = {
         "run_id":              str(uuid.uuid4())[:8],
@@ -68,101 +93,97 @@ def run_evaluation(
 
     _log.info(f"run_evaluation: folder={agent_folder}, inputs={eval_inputs}, agent_type={agent_type}")
 
-    # Yield empty plots immediately so panels appear while we work
-    yield EMPTY_PLOTS
+    # Write progress file that subprocess updates
+    progress_file = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    progress_file.write("{}"); progress_file.close()
+    pf = progress_file.name
 
-    # --- Step 1: run agent ---
-    progress(0.05, desc="Running agent...")
-    from agentscope.orchestrator.graph import _run_agent
-    state.update(_run_agent(state))
-    _log.info(f"run_agent done — {len(state['traces'])} traces")
+    # Build env for subprocess — inherit current env + load env files
+    env = {**os.environ,
+           "PYTHONPATH": AGENTSCOPE_ROOT,
+           "AGENTSCOPE_STATE": json.dumps(state),
+           "DEEPEVAL_PER_ATTEMPT_TIMEOUT_SECONDS_OVERRIDE": "180",
+           "AGENTSCOPE_VARIANCE": "0"}
 
-    # --- Step 2: synth_gen (optional) ---
-    if "synth_gen" in intake["active_tools"]:
-        progress(0.12, desc="Generating synthetic Q&A pairs...")
-        state.update(_run_node("agentscope.tools.synth_gen", "run", state))
+    cmd = [sys.executable, RUNNER_SCRIPT, pf] + [f for f in ENV_FILES if os.path.exists(f)]
+    proc = subprocess.Popen(cmd, env=env, cwd=AGENTSCOPE_ROOT,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
-    # --- Step 3: IR evaluator → render Panel 1 immediately ---
-    if "ir_evaluator" in intake["active_tools"]:
-        progress(0.20, desc="Scoring retrieval (IR)...")
-        state.update(_run_node("agentscope.tools.ir_evaluator", "run", state))
-        yield (
-            ir_chart(state["ir_results"] or {}),
-            None, None, None, None,
-        )
-    else:
-        yield EMPTY_PLOTS  # keep panels blank if IR not active
+    _log.info(f"subprocess PID: {proc.pid}")
 
-    # --- Step 4: agent behavior → render Panel 2 ---
-    progress(0.35, desc="Scoring agent behavior...")
-    state.update(_run_node("agentscope.tools.agent_behavior", "run", state))
-    yield (
-        ir_chart(state["ir_results"] or {}),
-        agent_chart(state["behavior_results"] or {}),
-        None, None, None,
-    )
+    # Current chart state — updated as stages complete
+    charts = {"ir": None, "behavior": None, "geval": None, "cost": None, "adversarial": None}
 
-    # --- Step 5: adversarial eval (runs before geval — no LLM wait) ---
-    progress(0.50, desc="Running adversarial evaluation...")
-    state.update(_run_node("agentscope.tools.adversarial_eval", "run", state))
-    yield (
-        ir_chart(state["ir_results"] or {}),
-        agent_chart(state["behavior_results"] or {}),
-        None, None,
-        adversarial_chart(state["adversarial_results"] or {}),
-    )
+    yield EMPTY  # show empty panels immediately
 
-    # --- Step 6: G-Eval → render Panel 3 (longest step) ---
-    progress(0.65, desc="G-Eval scoring (LLM judge)...")
-    state.update(_run_node("agentscope.tools.geval_tool", "run", state))
-    yield (
-        ir_chart(state["ir_results"] or {}),
-        agent_chart(state["behavior_results"] or {}),
-        geval_chart(state["geval_results"] or {}),
-        None,
-        adversarial_chart(state["adversarial_results"] or {}),
-    )
+    last_stage = ""
+    while proc.poll() is None:
+        time.sleep(1.5)
+        try:
+            with open(pf) as f:
+                data = json.load(f)
+        except Exception:
+            continue
 
-    # --- Step 7: cost analyzer → render Panel 4 ---
-    progress(0.85, desc="Computing cost metrics...")
-    state.update(_run_node("agentscope.tools.cost_analyzer", "run", state))
-    yield (
-        ir_chart(state["ir_results"] or {}),
-        agent_chart(state["behavior_results"] or {}),
-        geval_chart(state["geval_results"] or {}),
-        cost_chart(state["cost_results"] or {}),
-        adversarial_chart(state["adversarial_results"] or {}),
-    )
+        stage = data.get("stage", "")
+        if stage == last_stage:
+            continue
+        last_stage = stage
 
-    # --- Step 8: compile report ---
-    progress(0.95, desc="Writing report...")
-    state.update(_run_node("agentscope.report.compiler", "run_compiler", state))
+        pct, desc = STAGE_PROGRESS.get(stage, (0, stage))
+        progress(pct, desc=desc)
+        _log.info(f"stage: {stage} ({pct*100:.0f}%)")
+
+        # Update charts as each result arrives
+        if stage == "ir_done" and data.get("ir"):
+            charts["ir"] = ir_chart(data["ir"])
+        if stage == "behavior_done" and data.get("behavior"):
+            charts["behavior"] = agent_chart(data["behavior"])
+        if stage == "adversarial_done" and data.get("adversarial"):
+            charts["adversarial"] = adversarial_chart(data["adversarial"])
+        if stage == "geval_done" and data.get("geval"):
+            charts["geval"] = geval_chart(data["geval"])
+        if stage == "cost_done" and data.get("cost"):
+            charts["cost"] = cost_chart(data["cost"])
+
+        yield (charts["ir"], charts["behavior"], charts["geval"],
+               charts["cost"], charts["adversarial"])
+
+        if stage == "error":
+            _log.error(f"subprocess error: {data.get('error')}\n{data.get('traceback','')}")
+            break
+
+    # Read final state
+    proc.wait()
+    try:
+        with open(pf) as f:
+            final = json.load(f)
+        if final.get("stage") == "done":
+            yield (
+                ir_chart(final.get("ir") or {}),
+                agent_chart(final.get("behavior") or {}),
+                geval_chart(final.get("geval") or {}),
+                cost_chart(final.get("cost") or {}),
+                adversarial_chart(final.get("adversarial") or {}),
+            )
+    except Exception as e:
+        _log.error(f"final read failed: {e}")
+    finally:
+        os.unlink(pf)
+
     progress(1.0, desc="Done ✓")
-
-    # Final yield with all panels populated
-    report = state["final_report"]["eval_results"]
-    yield (
-        ir_chart(report["ir"]          or {}),
-        agent_chart(report["behavior"] or {}),
-        geval_chart(report["geval"]    or {}),
-        cost_chart(report["cost"]      or {}),
-        adversarial_chart(report["adversarial"] or {}),
-    )
 
 
 with gr.Blocks(title="AgentScope") as demo:
     gr.Markdown("## AgentScope — Agentic Evaluation Framework")
     gr.Markdown(
         "_Agent folder must contain a `main.py` with a `run(query: str) -> str` function. "
-        "Example: `eval_targets/capstone_rag` or `tests/fake_agent`_"
+        "Examples: `eval_targets/capstone_rag` · `tests/fake_agent`_"
     )
 
     with gr.Row():
         agent_folder = gr.Textbox(label="Agent folder path", value="eval_targets/capstone_rag")
-        agent_model  = gr.Textbox(
-            label="Agent model name (e.g. claude-sonnet-4-5)",
-            value="claude-haiku-4-5-20251001",
-        )
+        agent_model  = gr.Textbox(label="Agent model name", value="claude-haiku-4-5-20251001")
 
     with gr.Row():
         kb_file = gr.File(label="Knowledge base (optional)", file_types=[".pdf", ".md", ".txt"])
@@ -176,27 +197,17 @@ with gr.Blocks(title="AgentScope") as demo:
     )
 
     with gr.Row():
-        agent_type = gr.Dropdown(
-            ["rag", "tool_use", "multi_agent", "hybrid"],
-            label="Agent type",
-            value="rag",
-        )
-        turn_type = gr.Dropdown(
-            ["single", "multi"],
-            label="Turn type",
-            value="single",
-        )
+        agent_type = gr.Dropdown(["rag", "tool_use", "multi_agent", "hybrid"], label="Agent type", value="rag")
+        turn_type  = gr.Dropdown(["single", "multi"], label="Turn type", value="single")
 
     run_btn = gr.Button("Run evaluation", variant="primary")
 
     with gr.Row():
         ir_plot    = gr.Plot(label="1 — IR metrics")
         agent_plot = gr.Plot(label="2 — Agentic metrics")
-
     with gr.Row():
         geval_plot = gr.Plot(label="3 — Response quality")
         cost_plot  = gr.Plot(label="4 — Cost analysis")
-
     with gr.Row():
         adv_plot = gr.Plot(label="5 — Safety and robustness")
 
