@@ -107,7 +107,7 @@ def plan_success(traces: list, model_name: str) -> float:
         input="Evaluate the agent's tool execution plan",
         actual_output=f"Tool sequence executed: {' → '.join(tool_sequence)}",
     )
-    metric.measure(tc)
+    asyncio.run(metric.a_measure(tc))
     return metric.score
 
 
@@ -327,7 +327,7 @@ def run(state: AgentState) -> AgentState:
         "permission_validation": permission_validation(all_events, schema),
     }
 
-    _log.info('agent_behavior: running G-Eval subprocess') — avoids asyncio deadlock with Gradio
+    _log.info('agent_behavior: running G-Eval subprocess')  # avoids asyncio deadlock
     geval_scores = _geval_behavior_scores(model_name, tool_sequence, tool_calls_raw)
 
     _log.info(f'agent_behavior: done — scores={list(geval_scores.keys())}')
