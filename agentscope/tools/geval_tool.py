@@ -1,3 +1,4 @@
+import os
 import warnings
 from deepeval.metrics import GEval, ConversationalGEval
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams, ConversationalTestCase, Turn
@@ -130,14 +131,15 @@ def run(state: AgentState) -> AgentState:
                 primary_model=model_name,
             ))
 
-    # Inter-judge variance — single-turn metrics only
+    # Inter-judge variance disabled by default — enable by setting AGENTSCOPE_VARIANCE=1
     variance_results = []
-    for sm in scored_metrics:
-        if sm.test_cases:
-            try:
-                variance_results.append(measure_inter_judge_variance(sm))
-            except Exception as e:
-                warnings.warn(f"variance measurement failed for {sm.name}: {e}")
+    if os.environ.get("AGENTSCOPE_VARIANCE") == "1":
+        for sm in scored_metrics:
+            if sm.test_cases:
+                try:
+                    variance_results.append(measure_inter_judge_variance(sm))
+                except Exception as e:
+                    warnings.warn(f"variance measurement failed for {sm.name}: {e}")
 
     # Calibration drift — compare against prior run baseline if provided
     baseline     = state.get("baseline_geval_scores") or {}
