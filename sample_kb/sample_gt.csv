@@ -1,0 +1,16 @@
+question,answer
+What is an agentic AI system?,An AI that takes sequences of actions to complete a goal using tools
+What does RAG stand for?,Retrieval-Augmented Generation
+What does Precision@k measure?,The fraction of retrieved documents in the top-k that are relevant
+What does MRR stand for?,Mean Reciprocal Rank
+What is a ghost action failure mode?,The agent claims to have completed an action without actually calling the tool
+What is an interrogation loop?,The agent repeatedly asks for information the user already provided in an earlier turn
+What is G-Eval?,An LLM-as-judge evaluation framework that scores responses against natural-language criteria
+What does nDCG measure?,Ranking quality giving more credit for relevant documents appearing earlier
+What is the quality-cost index?,Response quality divided by cost — a composite efficiency metric
+What is calibration drift?,A shift in judge scores over time relative to a baseline run measured using KL divergence
+What is tool selection accuracy?,Whether the agent called the correct tools for the task
+What is a confident fabricator?,An agent that produces fluent confident responses not grounded in retrieved context
+What is handoff correctness?,Whether context is accurately passed between agents in a multi-agent system
+What does Hit Rate@k measure?,The fraction of queries where at least one relevant document appears in the top-k
+What is argument correctness?,Whether the parameters passed to each tool call were valid and relevant
