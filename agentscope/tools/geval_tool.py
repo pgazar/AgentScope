@@ -91,7 +91,8 @@ def run(state: AgentState) -> AgentState:
                 # ~800 input + 300 output tokens per judgment at Sonnet pricing
                 judge_cost += 800 * 3e-6 + 300 * 15e-6
 
-            scores[m.name] = metric_scores
+            if metric_scores:  # skip if no test cases ran
+                scores[m.name] = metric_scores
             scored_metrics.append(ScoredMetric(
                 name=m.name,
                 criteria=m.criteria,
@@ -134,7 +135,7 @@ def run(state: AgentState) -> AgentState:
         ))
 
     state["geval_results"] = {
-        "scores": {k: round(sum(v) / len(v), 4) for k, v in scores.items()},
+        "scores": {k: round(sum(v) / len(v), 4) for k, v in scores.items() if v},
         "variance": variance_results,
         "drift": drift_results,
         "_judge_cost_est_usd": round(judge_cost, 4),
