@@ -9,8 +9,8 @@ from agentscope.judge.criteria import (
     SAFETY_CRITERIA,
 )
 from agentscope.judge.variance import ScoredMetric, measure_inter_judge_variance, measure_calibration_drift
-from agentscope.orchestrator.state import AgentState
 from agentscope.judge.model import build_model as _build_model
+from agentscope.orchestrator.state import AgentState
 
 
 def build_single_turn_metrics(model_name: str) -> list[GEval]:
@@ -47,11 +47,17 @@ def _extract_responses(traces: list) -> list[dict]:
 
 
 def run(state: AgentState) -> AgentState:
+    import logging
+    log = logging.getLogger("agentscope.geval")
+    log.setLevel(logging.DEBUG)
+    if not log.handlers:
+        log.addHandler(logging.StreamHandler())
+    log.info(f"geval starting — {len(state['traces'])} traces, turn_type={state['turn_type']}")
     model_name = state["config"]["judge"]["model"]
-    turn_type = state["turn_type"]
-    responses = _extract_responses(state["traces"])
+    turn_type  = state["turn_type"]
+    responses  = _extract_responses(state["traces"])
 
-    max_judge = state["config"]["eval"].get("max_geval_responses", 100)
+    max_judge  = state["config"]["eval"].get("max_geval_responses", 100)
     budget_usd = state["config"]["eval"].get("eval_budget_usd", 2.00)
     judge_cost = 0.0
 
@@ -79,20 +85,22 @@ def run(state: AgentState) -> AgentState:
         for m in metrics:
             if judge_cost >= budget_usd:
                 warnings.warn(
-                    f"G-Eval: eval_budget_usd={budget_usd} reached. "
-                    f"Stopping evaluation early."
+                    f"G-Eval: eval_budget_usd={budget_usd} reached. Stopping early."
                 )
                 break
 
             metric_scores = []
             for tc in test_cases:
-                m.measure(tc)
-                metric_scores.append(m.score)
-                # ~800 input + 300 output tokens per judgment at Sonnet pricing
-                judge_cost += 800 * 3e-6 + 300 * 15e-6
+                try:
+                    m.measure(tc)
+                    metric_scores.append(m.score)
+                    judge_cost += 800 * 3e-6 + 300 * 15e-6
+                except Exception as e:
+                    warnings.warn(f"G-Eval: {m.name} failed on a test case: {e}")
 
-            if metric_scores:  # skip if no test cases ran
+            if metric_scores:
                 scores[m.name] = metric_scores
+
             scored_metrics.append(ScoredMetric(
                 name=m.name,
                 criteria=m.criteria,
@@ -103,29 +111,36 @@ def run(state: AgentState) -> AgentState:
 
     else:
         turns = [Turn(role=t.get("role", "user"), content=t.get("content", t["output"])) for t in responses]
-        tc = ConversationalTestCase(turns=turns)
+        tc    = ConversationalTestCase(turns=turns)
         model = _build_model(model_name)
         for name, criteria in MULTI_TURN_CRITERIA.items():
-            m = ConversationalGEval(name=name, criteria=criteria, model=model)
-            m.measure(tc)
-            scores[name] = [m.score]
-            # Variance skipped for conversational metrics — no LLMTestCase list
+            try:
+                m = ConversationalGEval(name=name, criteria=criteria, model=model)
+                m.measure(tc)
+                scores[name] = [m.score]
+            except Exception as e:
+                warnings.warn(f"G-Eval: {name} failed: {e}")
+                scores[name] = []
+
             scored_metrics.append(ScoredMetric(
                 name=name,
                 criteria=criteria,
                 test_cases=[],
-                primary_scores=[m.score],
+                primary_scores=scores.get(name, []),
                 primary_model=model_name,
             ))
 
-    # Inter-judge variance — single-turn metrics only (need LLMTestCase list)
+    # Inter-judge variance — single-turn metrics only
     variance_results = []
     for sm in scored_metrics:
         if sm.test_cases:
-            variance_results.append(measure_inter_judge_variance(sm))
+            try:
+                variance_results.append(measure_inter_judge_variance(sm))
+            except Exception as e:
+                warnings.warn(f"variance measurement failed for {sm.name}: {e}")
 
     # Calibration drift — compare against prior run baseline if provided
-    baseline = state.get("baseline_geval_scores") or {}
+    baseline     = state.get("baseline_geval_scores") or {}
     drift_results = []
     for sm in scored_metrics:
         drift_results.append(measure_calibration_drift(
@@ -135,9 +150,9 @@ def run(state: AgentState) -> AgentState:
         ))
 
     state["geval_results"] = {
-        "scores": {k: round(sum(v) / len(v), 4) for k, v in scores.items() if v},
-        "variance": variance_results,
-        "drift": drift_results,
+        "scores":              {k: round(sum(v) / len(v), 4) for k, v in scores.items() if v},
+        "variance":            variance_results,
+        "drift":               drift_results,
         "_judge_cost_est_usd": round(judge_cost, 4),
     }
     return state

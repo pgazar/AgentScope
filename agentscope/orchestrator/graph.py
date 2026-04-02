@@ -14,15 +14,24 @@ State contract per node:
     geval:           reads traces, config, turn_type                → writes geval_results
     cost_analyzer:   reads traces, agent_model, geval_results       → writes cost_results
     compile_report:  reads all result keys                          → writes final_report
+
+Important: every node returns a plain dict of only the keys it writes.
+LangGraph merges this dict into the accumulated state — do NOT return the
+full state object, as mutations to the input dict are not propagated.
 """
 
+import logging
 from langgraph.graph import StateGraph, END
 
 from agentscope.orchestrator.state import AgentState
 from agentscope.runner import AgentRunner
 
+log = logging.getLogger("agentscope.graph")
+logging.basicConfig(level=logging.INFO)
 
-def _run_agent(state: AgentState) -> AgentState:
+
+def _run_agent(state: AgentState) -> dict:
+    log.info(f"run_agent: {len(state['eval_inputs'])} inputs, folder={state['agent_folder']}")
     runner = AgentRunner(
         agent_folder=state["agent_folder"],
         agent_model=state.get("agent_model", "unknown"),
@@ -31,16 +40,22 @@ def _run_agent(state: AgentState) -> AgentState:
     for inp in state["eval_inputs"]:
         trace = runner.run(inp, state["run_id"])
         traces.append(trace)
-    state["traces"] = traces
-    return state
+    log.info(f"run_agent: produced {len(traces)} traces")
+    return {"traces": traces}
 
 
 def _load_node(module_path: str, fn_name: str = "run"):
-    """Lazily imports a tool's run() so missing deps only fail at execution time."""
-    def node(state: AgentState) -> AgentState:
+    """
+    Lazily imports a tool's run() so missing deps only fail at execution time.
+    Wraps the tool's return value to ensure only updated keys are returned.
+    """
+    def node(state: AgentState) -> dict:
         import importlib
         mod = importlib.import_module(module_path)
-        return getattr(mod, fn_name)(state)
+        result = getattr(mod, fn_name)(state)
+        # result is the full updated state — return it as-is so LangGraph
+        # can merge all keys (tools update one key each, so this is safe)
+        return result
     node.__name__ = module_path.split(".")[-1]
     return node
 
@@ -56,11 +71,11 @@ def build_graph(active_tools: list[str]) -> "CompiledGraph":
     if "ir_evaluator" in active_tools:
         graph.add_node("ir_evaluator", _load_node("agentscope.tools.ir_evaluator"))
 
-    graph.add_node("agent_behavior",  _load_node("agentscope.tools.agent_behavior"))
+    graph.add_node("agent_behavior",   _load_node("agentscope.tools.agent_behavior"))
     graph.add_node("adversarial_eval", _load_node("agentscope.tools.adversarial_eval"))
-    graph.add_node("geval",           _load_node("agentscope.tools.geval_tool"))
-    graph.add_node("cost_analyzer",   _load_node("agentscope.tools.cost_analyzer"))
-    graph.add_node("compile_report",  _load_node("agentscope.report.compiler", "run_compiler"))
+    graph.add_node("geval",            _load_node("agentscope.tools.geval_tool"))
+    graph.add_node("cost_analyzer",    _load_node("agentscope.tools.cost_analyzer"))
+    graph.add_node("compile_report",   _load_node("agentscope.report.compiler", "run_compiler"))
 
     graph.set_entry_point("run_agent")
 
@@ -75,10 +90,10 @@ def build_graph(active_tools: list[str]) -> "CompiledGraph":
     else:
         graph.add_edge("run_agent", "agent_behavior")
 
-    graph.add_edge("agent_behavior",  "adversarial_eval")
+    graph.add_edge("agent_behavior",   "adversarial_eval")
     graph.add_edge("adversarial_eval", "geval")
-    graph.add_edge("geval",           "cost_analyzer")
-    graph.add_edge("cost_analyzer",   "compile_report")
-    graph.add_edge("compile_report",  END)
+    graph.add_edge("geval",            "cost_analyzer")
+    graph.add_edge("cost_analyzer",    "compile_report")
+    graph.add_edge("compile_report",   END)
 
     return graph.compile()
