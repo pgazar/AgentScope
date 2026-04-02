@@ -78,7 +78,7 @@ def argument_correctness(traces: list, model_name: str) -> float:
             input=str(call.tool_args),
             actual_output=f"Tool: {call.tool_name} | Args: {call.tool_args}",
         )
-        metric.measure(tc)
+        asyncio.run(metric.a_measure(tc))
         scores.append(metric.score)
     return sum(scores) / len(scores)
 
@@ -141,7 +141,7 @@ def handoff_correctness(traces: list, model_name: str) -> float:
             input=f"Context passed: {ctx}",
             actual_output=f"To agent: {h.tool_name} | Context: {ctx}",
         )
-        metric.measure(tc)
+        asyncio.run(metric.a_measure(tc))
         scores.append(metric.score)
     return sum(scores) / len(scores)
 
@@ -241,7 +241,7 @@ def score(name, criteria, input_text, output_text):
     m = GEval(name=name, criteria=criteria, evaluation_params=params, model=model)
     tc = LLMTestCase(input=input_text, actual_output=output_text)
     try:
-        m.measure(tc)
+        asyncio.run(m.a_measure(tc))
         return m.score
     except Exception as e:
         return 0.0

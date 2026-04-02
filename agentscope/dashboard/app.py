@@ -1,49 +1,14 @@
 import uuid
-import json
-import os
-import sys
-import time
-import tempfile
-import subprocess
 import logging
 import gradio as gr
 
 from agentscope.dashboard.charts import ir_chart, agent_chart, geval_chart, cost_chart, adversarial_chart
+from agentscope.orchestrator.graph import build_graph
 from agentscope.intake.intake_agent import IntakeAgent
 from agentscope.config import load_config
 
 logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger("agentscope.app")
-
-AGENTSCOPE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RUNNER_SCRIPT   = os.path.join(AGENTSCOPE_ROOT, "agentscope", "dashboard", "runner_subprocess.py")
-
-# Env files to pass to subprocess
-ENV_FILES = [
-    os.path.join(AGENTSCOPE_ROOT, ".env"),
-    "/Users/pegahzargarian/projects/MCP-1/workspace/capstone-rag/.env",
-]
-
-EMPTY = (None, None, None, None, None)
-
-STAGE_PROGRESS = {
-    "starting":         (0.02, "Starting..."),
-    "running_agent":    (0.08, "Running agent on queries..."),
-    "agent_done":       (0.18, "Agent done — traces collected"),
-    "synth_gen":        (0.25, "Generating synthetic Q&A pairs..."),
-    "ir_evaluator":     (0.32, "Scoring retrieval (IR metrics)..."),
-    "ir_done":          (0.38, "IR metrics done"),
-    "agent_behavior":   (0.42, "Scoring agent behavior..."),
-    "behavior_done":    (0.52, "Behavior metrics done"),
-    "adversarial_eval": (0.56, "Running adversarial evaluation..."),
-    "adversarial_done": (0.68, "Adversarial done"),
-    "geval":            (0.72, "G-Eval LLM judge scoring..."),
-    "geval_done":       (0.88, "G-Eval done"),
-    "cost_analyzer":    (0.90, "Computing cost & latency..."),
-    "cost_done":        (0.94, "Cost done"),
-    "compile_report":   (0.96, "Writing report..."),
-    "done":             (1.00, "Complete ✓"),
-}
 
 
 def run_evaluation(
@@ -56,17 +21,20 @@ def run_evaluation(
     turn_type: str,
     progress=gr.Progress(),
 ):
+    cfg = load_config()
+
     eval_inputs = [l.strip() for l in (eval_inputs_text or "").strip().splitlines() if l.strip()]
     if not eval_inputs:
         raise ValueError("Evaluation inputs cannot be empty — enter at least one query.")
 
-    cfg     = load_config()
-    intake  = IntakeAgent().run({
+    answers = {
         "agent_type": agent_type,
         "turn_type":  turn_type,
         "has_gt":     "yes" if gt_file else "no",
         "kb_format":  "pdf" if kb_file else "none",
-    })
+    }
+    intake = IntakeAgent().run(answers)
+    graph  = build_graph(intake["active_tools"])
 
     state = {
         "run_id":              str(uuid.uuid4())[:8],
@@ -92,88 +60,18 @@ def run_evaluation(
     }
 
     _log.info(f"run_evaluation: folder={agent_folder}, inputs={eval_inputs}, agent_type={agent_type}")
+    progress(0.1, desc="Running agent and collecting traces...")
+    result = graph.invoke(state)
+    progress(1.0, desc="Complete")
 
-    # Write progress file that subprocess updates
-    progress_file = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-    progress_file.write("{}"); progress_file.close()
-    pf = progress_file.name
-
-    # Build env for subprocess — inherit current env + load env files
-    env = {**os.environ,
-           "PYTHONPATH": AGENTSCOPE_ROOT,
-           "AGENTSCOPE_STATE": json.dumps(state),
-           "DEEPEVAL_PER_ATTEMPT_TIMEOUT_SECONDS_OVERRIDE": "180",
-           "AGENTSCOPE_VARIANCE": "0"}
-
-    cmd = [sys.executable, RUNNER_SCRIPT, pf] + [f for f in ENV_FILES if os.path.exists(f)]
-    proc = subprocess.Popen(cmd, env=env, cwd=AGENTSCOPE_ROOT,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-
-    _log.info(f"subprocess PID: {proc.pid}")
-
-    # Current chart state — updated as stages complete
-    charts = {"ir": None, "behavior": None, "geval": None, "cost": None, "adversarial": None}
-
-    yield EMPTY  # show empty panels immediately
-
-    last_stage = ""
-    while proc.poll() is None:
-        time.sleep(1.5)
-        try:
-            with open(pf) as f:
-                data = json.load(f)
-        except Exception:
-            continue
-
-        stage = data.get("stage", "")
-        pct, desc = STAGE_PROGRESS.get(stage, (0, stage))
-
-        # Always update progress so spinner keeps moving even on slow stages
-        progress(pct, desc=desc)
-
-        if stage == last_stage:
-            continue
-        last_stage = stage
-        _log.info(f"stage: {stage} ({pct*100:.0f}%)")
-
-        # Update charts as each result arrives
-        if stage == "ir_done" and data.get("ir"):
-            charts["ir"] = ir_chart(data["ir"])
-        if stage == "behavior_done" and data.get("behavior"):
-            charts["behavior"] = agent_chart(data["behavior"])
-        if stage == "adversarial_done" and data.get("adversarial"):
-            charts["adversarial"] = adversarial_chart(data["adversarial"])
-        if stage == "geval_done" and data.get("geval"):
-            charts["geval"] = geval_chart(data["geval"])
-        if stage == "cost_done" and data.get("cost"):
-            charts["cost"] = cost_chart(data["cost"])
-
-        yield (charts["ir"], charts["behavior"], charts["geval"],
-               charts["cost"], charts["adversarial"])
-
-        if stage == "error":
-            _log.error(f"subprocess error: {data.get('error')}\n{data.get('traceback','')}")
-            break
-
-    # Read final state
-    proc.wait()
-    try:
-        with open(pf) as f:
-            final = json.load(f)
-        if final.get("stage") == "done":
-            yield (
-                ir_chart(final.get("ir") or {}),
-                agent_chart(final.get("behavior") or {}),
-                geval_chart(final.get("geval") or {}),
-                cost_chart(final.get("cost") or {}),
-                adversarial_chart(final.get("adversarial") or {}),
-            )
-    except Exception as e:
-        _log.error(f"final read failed: {e}")
-    finally:
-        os.unlink(pf)
-
-    progress(1.0, desc="Done ✓")
+    report = result["final_report"]["eval_results"]
+    return (
+        ir_chart(report["ir"]          or {}),
+        agent_chart(report["behavior"] or {}),
+        geval_chart(report["geval"]    or {}),
+        cost_chart(report["cost"]      or {}),
+        adversarial_chart(report["adversarial"] or {}),
+    )
 
 
 with gr.Blocks(title="AgentScope") as demo:
