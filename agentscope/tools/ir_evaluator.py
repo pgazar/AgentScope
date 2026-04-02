@@ -44,24 +44,44 @@ def _parse_retrievals(traces: list) -> list[list]:
     return results
 
 
-def _load_ground_truth(gt_path: str) -> list[set]:
+def _load_ground_truth(gt_path: str, queries: list[str] = None) -> list[set]:
     """
     Loads ground truth from a CSV with columns: question, answer.
     Each answer is treated as a single relevant doc ID for that query.
+    If queries provided, filters and aligns rows by matching question text.
     """
-    relevant_sets = []
+    all_rows = {}
+    ordered_rows = []
     with open(gt_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            q      = row.get("question", "").strip().lower()
             answer = row.get("answer", "").strip()
-            relevant_sets.append({answer} if answer else set())
-    return relevant_sets
+            all_rows[q] = {answer} if answer else set()
+            ordered_rows.append((q, {answer} if answer else set()))
+
+    if not queries:
+        # No query filter — return all rows in order
+        return [s for _, s in ordered_rows]
+
+    # Align by matching query text — fall back to empty set if no match
+    result = []
+    for q in queries:
+        key = q.strip().lower()
+        if key in all_rows:
+            result.append(all_rows[key])
+        else:
+            # Partial match fallback
+            match = next((s for k, s in all_rows.items() if key in k or k in key), set())
+            result.append(match)
+    return result
 
 
 def run(state: AgentState) -> AgentState:
     k = state["config"]["eval"]["k"]
     retrieved_lists = _parse_retrievals(state["traces"])
-    relevant_sets = _load_ground_truth(state["gt_path"])
+    queries = [t.agent_input for t in state["traces"] if hasattr(t, "agent_input")]
+    relevant_sets = _load_ground_truth(state["gt_path"], queries)
 
     # Align lengths — ground truth may have more rows than traces
     n = min(len(retrieved_lists), len(relevant_sets))
