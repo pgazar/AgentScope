@@ -95,9 +95,7 @@ with gr.Blocks(title="AgentScope") as demo:
         label="Evaluation inputs (one query per line)",
         lines=4,
         placeholder="What is the refund policy?\nHow do I reset my password?",
-        value="What was the revenue for Q3?
-What are the key features of the product?
-Who is the CEO of XYZ Corporation?",
+        value="What was the revenue for Q3?\nWhat are the key features of the product?\nWho is the CEO of XYZ Corporation?",
     )
 
     with gr.Row():
