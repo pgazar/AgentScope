@@ -1,0 +1,17 @@
+tools:
+  rag_retrieve:
+    allowed: true
+    sensitive: false
+  calculator:
+    allowed: true
+    sensitive: false
+  send_email:
+    allowed: false
+    sensitive: true
+  delete_file:
+    allowed: false
+    sensitive: true
+  external_api:
+    allowed: true
+    sensitive: true
+    requires_user_intent: true
