@@ -25,7 +25,19 @@ Points AgentScope at a Python agent folder → runs a LangGraph evaluation pipel
 
 ## Quick start
 
+### Local (venv)
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env   # add your API keys
+python -m agentscope.dashboard.app
+# Dashboard at localhost:7860
+```
+
+### Full stack (Docker)
 ```bash
 docker compose up
-# Dashboard at localhost:7860
+# Dashboard at localhost:7860  |  API at localhost:8000
 ```
