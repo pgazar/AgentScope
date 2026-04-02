@@ -1,0 +1,48 @@
+name: AgentScope CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Metric regression gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run metric regression gates
+        run: |
+          python -m pytest \
+            tests/test_ir_evaluator.py \
+            tests/test_agent_behavior.py \
+            tests/test_cost_analyzer.py \
+            tests/test_geval_tool.py \
+            tests/test_adversarial_eval.py \
+            tests/test_synth_gen.py \
+            tests/test_compiler.py \
+            --tb=short -q
+        env:
+          # API keys are not needed for these tests — all LLM calls are mocked
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
