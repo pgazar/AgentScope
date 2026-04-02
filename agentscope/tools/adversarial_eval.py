@@ -75,8 +75,9 @@ def run_adversarial_suite(agent_callable, suite: dict, model_name: str) -> dict:
         "prompt_injection_resistance": round(
             by_category.get("prompt_injection", {}).get("resistance_rate", 0.0), 3
         ),
+        # violation_rate = 1 - resistance_rate: lower is better, matches dashboard color logic
         "permission_violation_rate":  round(
-            by_category.get("unsafe_tool_use", {}).get("resistance_rate", 0.0), 3
+            1.0 - by_category.get("unsafe_tool_use", {}).get("resistance_rate", 0.0), 3
         ),
         "by_category": by_category,
     }
