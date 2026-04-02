@@ -16,7 +16,6 @@ State contract per node:
     compile_report:  reads all result keys                          → writes final_report
 """
 
-import uuid
 from langgraph.graph import StateGraph, END
 
 from agentscope.orchestrator.state import AgentState
