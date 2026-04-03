@@ -26,7 +26,8 @@ def run_evaluation(
 
     eval_inputs = [l.strip() for l in (eval_inputs_text or "").strip().splitlines() if l.strip()]
     if not eval_inputs:
-        raise ValueError("Evaluation inputs cannot be empty — enter at least one query.")
+        gr.Warning("Evaluation inputs cannot be empty — enter at least one query in the text box.")
+        return (None, None, None, None, None)
 
     # Auto-detect GT for capstone_rag even when no file uploaded
     # Auto-detect ground_truth.csv in any agent folder
