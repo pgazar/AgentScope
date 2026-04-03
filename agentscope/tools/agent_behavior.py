@@ -359,7 +359,13 @@ def run(state: AgentState) -> AgentState:
         "step_budget_efficiency": step_budget_efficiency(len(tool_steps), max_steps),
         "convergence":         convergence(all_events, max_steps),
         "handoff_correctness": handoff_correctness(all_events, model_name) if agent_type == "multi_agent" else None,
-        "step_match":          step_match([], []),
+        # actual steps = tool names called in order from trace
+        # expected steps = from state["expected_tools"] if provided, else skip
+        "step_match": step_match(
+            actual=tool_sequence,
+            reference=expected if expected else [],
+            ordered=True,
+        ),
         "permission_validation": permission_validation(all_events, schema),
     }
 

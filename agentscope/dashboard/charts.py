@@ -58,18 +58,21 @@ def geval_chart(geval_results: dict) -> go.Figure:
 
 
 def cost_chart(cost_results: dict) -> go.Figure:
-    labels = ["Cost/query", "Cost/success", "p50 lat.", "p95 lat."]
+    qc = cost_results.get("qc_index", 0) or 0
+    labels = ["Cost/query", "Cost/success", "p50 lat.", "p95 lat.", "Quality-cost idx"]
     raw = [
         cost_results.get("cost_per_query",   0) or 0,
         cost_results.get("cost_per_success", 0) or 0,
         cost_results.get("p50_latency_s",    0) or 0,
         cost_results.get("p95_latency_s",    0) or 0,
+        min(qc / 200, 1.0),  # normalize to 0-1 for bar height (200 = excellent)
     ]
     colors = [
         color_for_metric(raw[0], "cost_usd"),
         color_for_metric(raw[1], "cost_usd"),
         color_for_metric(raw[2], "latency_s"),
         color_for_metric(raw[3], "latency_s"),
+        color_for_metric(raw[4], "agent"),   # qc_index: higher is better
     ]
     # Format text labels — show actual values even when bars are zero-height
     text = [
@@ -77,6 +80,7 @@ def cost_chart(cost_results: dict) -> go.Figure:
         f"${raw[1]:.5f}" if raw[1] else "N/A",
         f"{raw[2]:.3f}s" if raw[2] else "0.000s",
         f"{raw[3]:.3f}s" if raw[3] else "0.000s",
+        f"{qc:.1f}" if qc else "0.0",
     ]
     fig = go.Figure(go.Bar(
         x=labels, y=raw,
