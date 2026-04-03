@@ -1,4 +1,7 @@
+import asyncio
+import warnings
 from dataclasses import dataclass
+
 import numpy as np
 from deepeval.metrics import GEval
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
@@ -24,13 +27,15 @@ class ScoredMetric:
 
 def measure_inter_judge_variance(scored: ScoredMetric) -> dict:
     """
-    Re-runs the same test cases through a secondary judge model
+    Re-runs the same test cases through a secondary judge model (gpt-4o-mini)
     and computes per-metric score delta statistics.
+
     Uses scored.criteria directly — no implicit string lookup needed.
+    Uses asyncio.run(a_measure()) to avoid event loop conflicts with Gradio.
     """
     secondary_metric = GEval(
         name=f"{scored.name}_secondary",
-        criteria=scored.criteria,
+        criteria=scored.criteria,  # same criteria, different model
         evaluation_params=[
             LLMTestCaseParams.INPUT,
             LLMTestCaseParams.ACTUAL_OUTPUT,
@@ -41,21 +46,25 @@ def measure_inter_judge_variance(scored: ScoredMetric) -> dict:
 
     secondary_scores = []
     for tc in scored.test_cases:
-        secondary_metric.measure(tc)
-        secondary_scores.append(secondary_metric.score)
+        try:
+            asyncio.run(secondary_metric.a_measure(tc))
+            secondary_scores.append(secondary_metric.score)
+        except Exception as e:
+            warnings.warn(f"variance secondary judge failed on {scored.name}: {e}")
+            secondary_scores.append(0.0)
 
     deltas = [abs(p - s) for p, s in zip(scored.primary_scores, secondary_scores)]
     std = float(np.std(deltas)) if deltas else 0.0
     flagged = [i for i, d in enumerate(deltas) if d > VARIANCE_THRESHOLD]
 
     return {
-        "metric": scored.name,
-        "primary_model": scored.primary_model,
-        "secondary_model": SECONDARY_MODEL,
-        "mean_delta": round(float(np.mean(deltas)), 4) if deltas else 0.0,
-        "std_deviation": round(std, 4),
+        "metric":              scored.name,
+        "primary_model":       scored.primary_model,
+        "secondary_model":     SECONDARY_MODEL,
+        "mean_delta":          round(float(np.mean(deltas)), 4) if deltas else 0.0,
+        "std_deviation":       round(std, 4),
         "high_variance_cases": flagged,
-        "stable": std <= VARIANCE_THRESHOLD,
+        "stable":              std <= VARIANCE_THRESHOLD,
     }
 
 
@@ -65,19 +74,18 @@ def measure_calibration_drift(
     baseline_scores: list[float],
 ) -> dict:
     """
-    Compares current score distribution against a stored baseline
-    using KL divergence. Baseline is loaded from a previous run's
-    JSON report if available — explicitly passed in, not assumed.
+    Compares current score distribution against a stored baseline using KL divergence.
+    Baseline is loaded from a previous run's JSON report — explicitly passed in, not assumed.
     """
     if not baseline_scores:
         return {
-            "metric": metric_name,
+            "metric":         metric_name,
             "drift_measured": False,
-            "reason": "no baseline scores available for this metric",
+            "reason":         "no baseline scores available for this metric",
         }
 
     bins = np.linspace(0, 1, 11)
-    curr_hist, _ = np.histogram(current_scores, bins=bins, density=True)
+    curr_hist, _ = np.histogram(current_scores,  bins=bins, density=True)
     base_hist, _ = np.histogram(baseline_scores, bins=bins, density=True)
 
     # Small epsilon prevents log(0) in KL computation
@@ -88,9 +96,9 @@ def measure_calibration_drift(
     kl = float(entropy(curr_hist, base_hist))
 
     return {
-        "metric": metric_name,
+        "metric":         metric_name,
         "drift_measured": True,
-        "kl_divergence": round(kl, 4),
-        "drift_flagged": kl > DRIFT_THRESHOLD,
-        "threshold": DRIFT_THRESHOLD,
+        "kl_divergence":  round(kl, 4),
+        "drift_flagged":  kl > DRIFT_THRESHOLD,
+        "threshold":      DRIFT_THRESHOLD,
     }

@@ -1,3 +1,9 @@
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import warnings
 import yaml
 from difflib import SequenceMatcher
 from typing import Optional
@@ -78,6 +84,7 @@ def argument_correctness(traces: list, model_name: str) -> float:
             input=str(call.tool_args),
             actual_output=f"Tool: {call.tool_name} | Args: {call.tool_args}",
         )
+        import asyncio
         asyncio.run(metric.a_measure(tc))
         scores.append(metric.score)
     return sum(scores) / len(scores)
@@ -107,6 +114,7 @@ def plan_success(traces: list, model_name: str) -> float:
         input="Evaluate the agent's tool execution plan",
         actual_output=f"Tool sequence executed: {' → '.join(tool_sequence)}",
     )
+    import asyncio
     asyncio.run(metric.a_measure(tc))
     return metric.score
 
@@ -141,14 +149,71 @@ def handoff_correctness(traces: list, model_name: str) -> float:
             input=f"Context passed: {ctx}",
             actual_output=f"To agent: {h.tool_name} | Context: {ctx}",
         )
+        import asyncio
         asyncio.run(metric.a_measure(tc))
         scores.append(metric.score)
     return sum(scores) / len(scores)
 
 
 # --------------------------------------------------------------------------- #
-# Permission validation — LLM-as-judge                                        #
+# Permission validation — LLM judge for semantic tool name matching           #
 # --------------------------------------------------------------------------- #
+
+def _match_tool_to_schema(tool_name: str, schema_keys: list[str]) -> Optional[str]:
+    """
+    Uses an LLM to semantically match a tool name to the closest permission schema key.
+    Runs in a subprocess to avoid asyncio deadlocks from Gradio's event loop.
+
+    Handles cases like SendEmail → send_email, RAGRetrieve → rag_retrieve,
+    search_documents → rag_retrieve, where string normalization would fail.
+
+    Returns the matching schema key, or None if no semantic match exists.
+    """
+    script = f"""
+import os, sys
+from anthropic import Anthropic
+
+client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+tool_name   = {json.dumps(tool_name)}
+schema_keys = {json.dumps(schema_keys)}
+
+prompt = (
+    f"You are matching a tool name to a permission schema.\\n"
+    f"Tool name called by the agent: '{{tool_name}}'\\n"
+    f"Available schema keys: {{schema_keys}}\\n\\n"
+    "Which schema key is this tool semantically equivalent to? "
+    "Consider that names may differ in casing, separators, or phrasing "
+    "(e.g. SendEmail matches send_email, search_docs matches rag_retrieve).\\n"
+    "Reply with ONLY the matching key from the list above. "
+    "If none match semantically, reply with exactly: none"
+)
+
+resp = client.messages.create(
+    model="claude-haiku-4-5-20251001",
+    max_tokens=30,
+    messages=[{{"role": "user", "content": prompt}}]
+)
+result = resp.content[0].text.strip().strip('"').strip("'").lower()
+print(result if result in schema_keys else "none")
+"""
+    try:
+        r = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, timeout=15,
+            env={**os.environ},
+        )
+        if r.returncode == 0:
+            matched = r.stdout.strip()
+            return matched if matched in schema_keys else None
+        warnings.warn(f"permission LLM match failed for '{tool_name}': {r.stderr[-200:]}")
+        return None
+    except subprocess.TimeoutExpired:
+        warnings.warn(f"permission LLM match timed out for '{tool_name}'")
+        return None
+    except Exception as e:
+        warnings.warn(f"permission LLM match error for '{tool_name}': {e}")
+        return None
+
 
 def load_permission_schema(path: str = "permissions.yaml") -> dict:
     with open(path) as f:
@@ -157,10 +222,11 @@ def load_permission_schema(path: str = "permissions.yaml") -> dict:
 
 def permission_validation(traces: list, schema: dict) -> dict:
     """
-    Checks tool calls against the schema using simple key lookup.
-    G-Eval-based semantic matching is available but skipped here to
-    avoid asyncio deadlocks when called from Gradio. The schema keys
-    already match the agent's tool names directly.
+    Checks tool calls against the permission schema using LLM semantic matching.
+    Handles naming variants (CamelCase, hyphens, abbreviations) that string
+    normalization would miss — e.g. SendEmail → send_email, searchDocs → rag_retrieve.
+
+    Unknown tools (no semantic match found) are flagged as warnings, not violations.
     """
     tool_calls = [e for e in traces if hasattr(e, "event_type") and e.event_type == "tool_start"]
     if not tool_calls:
@@ -171,24 +237,27 @@ def permission_validation(traces: list, schema: dict) -> dict:
             "warnings": [],
         }
 
+    schema_keys = list(schema.keys())
     violations = []
     unknown_warnings = []
     severity_sum = 0.0
 
     for call in tool_calls:
-        name = call.tool_name.lower().replace("-", "_").replace(" ", "_")
-        policy = schema.get(name)
+        matched_key = _match_tool_to_schema(call.tool_name, schema_keys)
+        policy = schema.get(matched_key) if matched_key else None
 
         if policy is None:
             unknown_warnings.append({
                 "tool": call.tool_name,
-                "reason": "tool not in permission schema — review recommended",
+                "matched_key": matched_key,
+                "reason": "no semantic match found in permission schema — review recommended",
             })
             continue
 
         if not policy.get("allowed", True):
             violations.append({
                 "tool": call.tool_name,
+                "matched_key": matched_key,
                 "reason": "tool not permitted",
                 "severity": 1.0,
             })
@@ -196,6 +265,7 @@ def permission_validation(traces: list, schema: dict) -> dict:
         elif policy.get("sensitive", False):
             violations.append({
                 "tool": call.tool_name,
+                "matched_key": matched_key,
                 "reason": "sensitive operation executed",
                 "severity": 0.5,
             })
@@ -216,12 +286,9 @@ def permission_validation(traces: list, schema: dict) -> dict:
 
 def _geval_behavior_scores(model_name: str, tool_sequence: list, tool_calls: list) -> dict:
     """
-    Runs G-Eval-based behavior metrics (plan_success, arg_correctness, permission)
+    Runs G-Eval-based behavior metrics (plan_success, arg_correctness)
     in a subprocess to avoid deadlocking Gradio's asyncio event loop.
     """
-    import json, subprocess, sys, tempfile, os
-    import warnings
-
     script = f"""
 import asyncio, json, sys, os
 asyncio.set_event_loop(asyncio.new_event_loop())
@@ -230,7 +297,7 @@ from agentscope.judge.criteria import PLAN_SUCCESS_CRITERIA
 from deepeval.metrics import GEval
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 
-model_name   = {json.dumps(model_name)}
+model_name    = {json.dumps(model_name)}
 tool_sequence = {json.dumps(tool_sequence)}
 tool_calls    = {json.dumps(tool_calls)}
 
@@ -300,10 +367,6 @@ def ghost_action_rate(traces: list, agent_outputs: list[str]) -> dict:
     """
     Detects ghost actions: claims of tool execution in the final answer
     that are not backed by actual tool calls in the trace.
-
-    For each response, checks if the output mentions tool-like actions
-    (retrieve, calculate, search, found, fetched, queried, analyzed)
-    without any corresponding tool_start event in the trace.
     """
     import re
     ACTION_PATTERNS = [
@@ -336,7 +399,7 @@ def run(state: AgentState) -> AgentState:
     import logging as _logging
     _log = _logging.getLogger('agentscope.behavior')
     _log.info('agent_behavior.run: starting')
-    # Flatten all trace events from every AgentTrace run
+
     all_events = []
     for trace in state["traces"]:
         all_events.extend(trace.events if hasattr(trace, "events") else [])
@@ -346,8 +409,8 @@ def run(state: AgentState) -> AgentState:
     agent_type = state["agent_type"]
     expected   = state.get("expected_tools", [])
 
-    tool_steps = [e for e in all_events if hasattr(e, "event_type") and e.event_type == "tool_start"]
-    tool_sequence = [e.tool_name for e in tool_steps]
+    tool_steps     = [e for e in all_events if hasattr(e, "event_type") and e.event_type == "tool_start"]
+    tool_sequence  = [e.tool_name for e in tool_steps]
     tool_calls_raw = [{"tool": e.tool_name, "args": e.tool_args} for e in tool_steps]
 
     _log.info('agent_behavior: loading permission schema')
@@ -355,27 +418,24 @@ def run(state: AgentState) -> AgentState:
 
     _log.info('agent_behavior: running deterministic metrics')
     det = {
-        "tool_accuracy":       tool_selection_accuracy(all_events, expected),
+        "tool_accuracy":          tool_selection_accuracy(all_events, expected),
         "step_budget_efficiency": step_budget_efficiency(len(tool_steps), max_steps),
-        "convergence":         convergence(all_events, max_steps),
-        "handoff_correctness": handoff_correctness(all_events, model_name) if agent_type == "multi_agent" else None,
-        # actual steps = tool names called in order from trace
-        # expected steps = from state["expected_tools"] if provided, else skip
+        "convergence":            convergence(all_events, max_steps),
+        "handoff_correctness":    handoff_correctness(all_events, model_name) if agent_type == "multi_agent" else None,
         "step_match": step_match(
             actual=tool_sequence,
             reference=expected if expected else [],
             ordered=True,
         ),
-        "permission_validation": permission_validation(all_events, schema),
+        "permission_validation":  permission_validation(all_events, schema),
     }
 
-    _log.info('agent_behavior: running G-Eval subprocess')  # avoids asyncio deadlock
+    _log.info('agent_behavior: running G-Eval subprocess')
     geval_scores = _geval_behavior_scores(model_name, tool_sequence, tool_calls_raw)
 
-    _log.info(f'agent_behavior: done — scores={list(geval_scores.keys())}')
-    # Ghost action detection — cross-references trace and final answer
     agent_outputs = [t.agent_output for t in state["traces"] if hasattr(t, "agent_output")]
     ghost = ghost_action_rate(all_events, agent_outputs)
 
+    _log.info(f'agent_behavior: done — scores={list(geval_scores.keys())}')
     state["behavior_results"] = {**det, **geval_scores, **ghost}
     return state

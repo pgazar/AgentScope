@@ -1,5 +1,4 @@
 import asyncio
-import os
 import warnings
 
 from deepeval.metrics import GEval, ConversationalGEval
@@ -11,7 +10,11 @@ from agentscope.judge.criteria import (
     HELPFULNESS_CRITERIA,
     SAFETY_CRITERIA,
 )
-from agentscope.judge.variance import ScoredMetric, measure_calibration_drift
+from agentscope.judge.variance import (
+    ScoredMetric,
+    measure_inter_judge_variance,
+    measure_calibration_drift,
+)
 from agentscope.judge.model import build_model as _build_model
 from agentscope.orchestrator.state import AgentState
 
@@ -48,8 +51,8 @@ def _extract_responses(traces: list) -> list[dict]:
     return responses
 
 
-def _measure(metric, tc: LLMTestCase) -> float:
-    """Use asyncio.run(a_measure()) to avoid event loop conflicts."""
+def _measure(metric: GEval, tc: LLMTestCase) -> float:
+    """Runs a_measure() in a fresh event loop to avoid conflicts with Gradio's loop."""
     try:
         return asyncio.run(metric.a_measure(tc))
     except Exception as e:
@@ -70,13 +73,15 @@ def run(state: AgentState) -> AgentState:
     budget_usd = state["config"]["eval"].get("eval_budget_usd", 2.00)
     judge_cost = 0.0
 
-    # Multi-turn needs all turns — never truncate for multi-turn evaluation
+    # Multi-turn needs all turns — never truncate
     if turn_type == "single" and len(responses) > max_judge:
         warnings.warn(f"G-Eval: truncating {len(responses)} → {max_judge} responses.")
         responses = responses[:max_judge]
 
     if not responses:
-        state["geval_results"] = {"scores": {}, "variance": [], "drift": [], "_judge_cost_est_usd": 0.0}
+        state["geval_results"] = {
+            "scores": {}, "variance": [], "drift": [], "_judge_cost_est_usd": 0.0
+        }
         return state
 
     test_cases = [
@@ -89,6 +94,8 @@ def run(state: AgentState) -> AgentState:
     ]
 
     scores: dict[str, list[float]] = {}
+    # Built inside the loop so criteria and test_cases are in scope for variance
+    scored_metrics: list[ScoredMetric] = []
 
     if turn_type == "single":
         metrics = build_single_turn_metrics(model_name)
@@ -104,8 +111,16 @@ def run(state: AgentState) -> AgentState:
             if metric_scores:
                 scores[m.name] = metric_scores
             log.info(f"geval {m.name}: {metric_scores}")
+
+            # Build ScoredMetric here — m.criteria and test_cases are both available
+            scored_metrics.append(ScoredMetric(
+                name=m.name,
+                criteria=m.criteria,       # actual criteria string from the GEval object
+                test_cases=test_cases,     # same test cases used for primary scoring
+                primary_scores=metric_scores,
+                primary_model=model_name,
+            ))
     else:
-        # Build alternating user/assistant turns from all traces
         turns = []
         for r in responses:
             turns.append(Turn(role="user",      content=r["input"]))
@@ -117,15 +132,29 @@ def run(state: AgentState) -> AgentState:
                 m = ConversationalGEval(name=name, criteria=criteria, model=model)
                 asyncio.run(m.a_measure(tc))
                 scores[name] = [m.score]
+                # Conversational metrics have no LLMTestCase list — variance skipped
+                scored_metrics.append(ScoredMetric(
+                    name=name,
+                    criteria=criteria,
+                    test_cases=[],
+                    primary_scores=[m.score],
+                    primary_model=model_name,
+                ))
             except Exception as e:
                 warnings.warn(f"G-Eval {name} failed: {e}")
 
-    # Calibration drift
-    baseline      = state.get("baseline_geval_scores") or {}
-    scored_metrics = [
-        ScoredMetric(name=k, criteria="", test_cases=[], primary_scores=v, primary_model=model_name)
-        for k, v in scores.items()
-    ]
+    # Inter-judge variance — only for single-turn metrics that have test cases
+    # Runs the same test cases through gpt-4o-mini and measures score deltas
+    variance_results = []
+    for sm in scored_metrics:
+        if sm.test_cases:  # skip conversational metrics — no LLMTestCase list
+            try:
+                variance_results.append(measure_inter_judge_variance(sm))
+            except Exception as e:
+                warnings.warn(f"variance measurement failed for {sm.name}: {e}")
+
+    # Calibration drift — compares current distribution against a prior run's baseline
+    baseline = state.get("baseline_geval_scores") or {}
     drift_results = [
         measure_calibration_drift(sm.name, sm.primary_scores, baseline.get(sm.name, []))
         for sm in scored_metrics
@@ -133,9 +162,10 @@ def run(state: AgentState) -> AgentState:
 
     state["geval_results"] = {
         "scores":              {k: round(sum(v) / len(v), 4) for k, v in scores.items() if v},
-        "variance":            [],
+        "variance":            variance_results,
         "drift":               drift_results,
         "_judge_cost_est_usd": round(judge_cost, 4),
     }
-    log.info(f"geval done: {state['geval_results']['scores']}")
+    log.info(f"geval done: scores={state['geval_results']['scores']}, "
+             f"variance_metrics={len(variance_results)}")
     return state
