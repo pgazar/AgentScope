@@ -29,8 +29,7 @@ def run_evaluation(
         gr.Warning("Evaluation inputs cannot be empty — enter at least one query in the text box.")
         return (None, None, None, None, None)
 
-    # Auto-detect GT for capstone_rag even when no file uploaded
-    # Auto-detect ground_truth.csv in any agent folder
+    # Auto-detect ground_truth.csv in the agent folder (no upload needed)
     _auto_gt = os.path.join(agent_folder, "ground_truth.csv")
     has_gt = gt_file or os.path.exists(_auto_gt)
     answers = {
@@ -85,11 +84,11 @@ with gr.Blocks(title="AgentScope") as demo:
     gr.Markdown("## AgentScope — Agentic Evaluation Framework")
     gr.Markdown(
         "_Agent folder must contain a `main.py` with a `run(query: str) -> str` function. "
-        "Examples: `eval_targets/capstone_rag` · `tests/fake_agent`_"
+        "The agent folder must contain `main.py` with `def run(query: str) -> str`. Optionally add `ground_truth.csv` for IR metrics or `inject_trace_events(trace)` for custom agents._"
     )
 
     with gr.Row():
-        agent_folder = gr.Textbox(label="Agent folder path", value="eval_targets/capstone_rag")
+        agent_folder = gr.Textbox(label="Agent folder path", value="")
         agent_model  = gr.Textbox(label="Agent model name", value="claude-haiku-4-5-20251001")
 
     with gr.Row():
