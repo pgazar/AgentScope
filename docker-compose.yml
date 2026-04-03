@@ -18,24 +18,17 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       DATABASE_URL: postgresql://postgres:agentscope@postgres:5432/agentscope
-      # Model used by agents mounted under /agents
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
-      # DB config for capstone-rag (points to host machine's postgres on 5433)
-      DB_HOST: host.docker.internal
-      DB_PORT: ${DB_PORT:-5433}
-      DB_USER: ${DB_USER:-capstone}
-      DB_PASSWORD: ${DB_PASSWORD:-capstone}
-      DB_NAME: ${DB_NAME:-capstone_rag}
     volumes:
       - ./outputs:/app/outputs
       - ./config.yaml:/app/config.yaml
-      # Mount your agents directory into the container at /agents
-      # Any agent folder you drop here becomes available in the dashboard
-      - ${AGENTS_DIR:-/Users/pegahzargarian/projects/MCP-1/workspace/sample_agents}:/agents
+      # Mount your agents directory into the container at /agents.
+      # Set AGENTS_DIR in your .env to point to your agents folder.
+      # Default points to the AgentScope tests/ folder (reference agents only).
+      - ${AGENTS_DIR:-./tests}:/agents
     depends_on:
       - postgres
     extra_hosts:
-      # Allows container to reach services on your Mac (e.g. capstone_db on port 5433)
+      # Allows the container to reach services running on your Mac
       - "host.docker.internal:host-gateway"
     command: python -m agentscope.dashboard.app
 
