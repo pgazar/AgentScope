@@ -296,6 +296,42 @@ print(json.dumps(results))
         os.unlink(tmp)
 
 
+def ghost_action_rate(traces: list, agent_outputs: list[str]) -> dict:
+    """
+    Detects ghost actions: claims of tool execution in the final answer
+    that are not backed by actual tool calls in the trace.
+
+    For each response, checks if the output mentions tool-like actions
+    (retrieve, calculate, search, found, fetched, queried, analyzed)
+    without any corresponding tool_start event in the trace.
+    """
+    import re
+    ACTION_PATTERNS = [
+        r"\b(retrieved|fetched|searched|found|queried|calculated|analyzed|summarized)\b",
+        r"\b(the results? (show|indicate|reveal))\b",
+        r"\b(according to (the|my) (search|retrieval|data|results?))\b",
+    ]
+    combined = "|".join(ACTION_PATTERNS)
+
+    ghost_count = 0
+    total = len(agent_outputs)
+
+    for output, trace_events in zip(agent_outputs, [traces]):
+        claimed_action = bool(re.search(combined, output, re.IGNORECASE))
+        has_tool_call  = any(
+            hasattr(e, "event_type") and e.event_type == "tool_start"
+            for e in trace_events
+        )
+        if claimed_action and not has_tool_call:
+            ghost_count += 1
+
+    return {
+        "ghost_action_rate": round(ghost_count / total, 3) if total else 0.0,
+        "ghost_count":       ghost_count,
+        "total_checked":     total,
+    }
+
+
 def run(state: AgentState) -> AgentState:
     import logging as _logging
     _log = _logging.getLogger('agentscope.behavior')
@@ -331,5 +367,9 @@ def run(state: AgentState) -> AgentState:
     geval_scores = _geval_behavior_scores(model_name, tool_sequence, tool_calls_raw)
 
     _log.info(f'agent_behavior: done — scores={list(geval_scores.keys())}')
-    state["behavior_results"] = {**det, **geval_scores}
+    # Ghost action detection — cross-references trace and final answer
+    agent_outputs = [t.agent_output for t in state["traces"] if hasattr(t, "agent_output")]
+    ghost = ghost_action_rate(all_events, agent_outputs)
+
+    state["behavior_results"] = {**det, **geval_scores, **ghost}
     return state

@@ -58,6 +58,7 @@ Every bar is labeled with its value so panels are readable even when scores are 
 | Convergence | Did the agent finish within the allowed step budget? |
 | Step match | Ordered/unordered comparison of actual vs. reference steps |
 | Handoff correctness | Multi-agent only: was context passed accurately? |
+| **Ghost action rate** | **Detects claims of tool execution not backed by actual tool calls in the trace** |
 
 ### Response Quality (G-Eval LLM-as-judge)
 | Metric | Description |

@@ -14,10 +14,17 @@ def ir_chart(ir_results: dict) -> go.Figure:
 
 
 def agent_chart(behavior_results: dict) -> go.Figure:
-    labels = ["Tool acc.", "Plan success", "Step budget eff.", "Arg. correct", "Convergence"]
-    keys   = ["tool_accuracy", "plan_success", "step_budget_efficiency", "arg_correctness", "convergence"]
+    labels = ["Tool acc.", "Plan success", "Step budget eff.", "Arg. correct", "Convergence", "Ghost action"]
+    keys   = ["tool_accuracy", "plan_success", "step_budget_efficiency", "arg_correctness", "convergence", "ghost_action_rate"]
     values = [behavior_results.get(k, 0) for k in keys]
-    colors = [color_for_metric(v, "agent") for v in values]
+    colors = [
+        color_for_metric(values[0], "agent"),
+        color_for_metric(values[1], "agent"),
+        color_for_metric(values[2], "agent"),
+        color_for_metric(values[3], "agent"),
+        color_for_metric(values[4], "agent"),
+        color_for_metric(values[5], "hallu"),  # ghost action: lower is better (inverted)
+    ]
     fig = go.Figure(go.Bar(x=labels, y=values, marker_color=colors,
                               text=[f"{v:.2f}" if v is not None else "N/A" for v in values], textposition="outside", cliponaxis=False))
     fig.update_layout(title="Agentic metrics", yaxis_range=[0, 1.15], height=280)
