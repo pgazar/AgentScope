@@ -84,7 +84,7 @@ with gr.Blocks(title="AgentScope") as demo:
     gr.Markdown("## AgentScope — Agentic Evaluation Framework")
     gr.Markdown(
         "_Agent folder must contain a `main.py` with a `run(query: str) -> str` function. "
-        "The agent folder must contain `main.py` with `def run(query: str) -> str`. Optionally add `ground_truth.csv` for IR metrics or `inject_trace_events(trace)` for custom agents._"
+        "**Docker:** agent folders are mounted at `/agents/` — enter e.g. `/agents/capstone_rag`. "       "**Local:** enter any absolute path. "       "Agent folder must contain `main.py` with `def run(query: str) -> str`. "       "Optionally add `ground_truth.csv` for IR metrics._"
     )
 
     with gr.Row():
