@@ -70,7 +70,8 @@ def run(state: AgentState) -> AgentState:
     budget_usd = state["config"]["eval"].get("eval_budget_usd", 2.00)
     judge_cost = 0.0
 
-    if len(responses) > max_judge:
+    # Multi-turn needs all turns — never truncate for multi-turn evaluation
+    if turn_type == "single" and len(responses) > max_judge:
         warnings.warn(f"G-Eval: truncating {len(responses)} → {max_judge} responses.")
         responses = responses[:max_judge]
 
