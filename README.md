@@ -116,7 +116,7 @@ Query: *"What was the revenue for Q3?"*
 | API | FastAPI (`/evaluate`, `/health`) |
 | Deployment | Docker Compose (local) + Modal.com (serverless) |
 | Config | YAML + Pydantic |
-| Testing | pytest (74 tests) + GitHub Actions CI |
+| Testing | pytest (105 tests) + GitHub Actions CI |
 
 ---
 
@@ -148,7 +148,7 @@ docker compose up
 
 ```bash
 python -m pytest tests/ -q
-# 74 passed
+# 105 passed
 ```
 
 ---
@@ -223,9 +223,7 @@ agentscope/
 │   ├── report/            # JSON report compiler
 │   ├── dashboard/         # Gradio app + Plotly charts
 │   └── api/               # FastAPI endpoints
-├── eval_targets/
-│   └── capstone_rag/      # Adapter for capstone-rag ReAct agent
-├── tests/                 # 74 pytest tests
+├── tests/                 # 105 pytest tests
 ├── sample_kb/             # Sample knowledge base for testing
 ├── config.yaml            # Default evaluation config
 ├── permissions.yaml       # Tool permission schema
