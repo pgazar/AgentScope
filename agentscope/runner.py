@@ -1,6 +1,8 @@
 import time
 import importlib
+import importlib.util
 import inspect
+import os
 import sys
 from dataclasses import dataclass, field
 
@@ -47,29 +49,56 @@ class AgentRunner:
     def __init__(self, agent_folder: str, agent_model: str = "unknown"):
         self.agent_folder = agent_folder
         self.agent_model = agent_model  # model name of the EVALUATED agent
-        self._agent_module = None  # set by _load_agent
+        self._agent_module = None
         self._agent_fn = self._load_agent(agent_folder)
 
     def _load_agent(self, folder: str):
         """
-        Attempts to import the agent's main callable from the folder.
-        Looks for run, invoke, agent, or chat in __init__.py or main.py.
+        Loads the agent callable directly from a file path using
+        importlib.util.spec_from_file_location.
+
+        This bypasses sys.modules caching and sys.path lookup entirely,
+        so evaluating multiple different agents in the same process
+        (e.g. across Gradio sessions) never returns a stale cached module.
+
+        Looks for run, invoke, agent, or chat in main.py / __init__.py.
         """
-        sys.path.insert(0, folder)
+        # Ensure the agent's folder is on sys.path so its internal
+        # relative imports (e.g. from src.tools import ...) resolve correctly
+        if folder not in sys.path:
+            sys.path.insert(0, folder)
+
+        errors = []
         for module_name in ["main", "__init__", "agent", "app"]:
-            try:
-                mod = importlib.import_module(module_name)
-                for fn_name in ["run", "invoke", "agent", "chat"]:
-                    fn = getattr(mod, fn_name, None)
-                    if callable(fn):
-                        self._agent_module = mod  # store for inject_trace_events
-                        return fn
-            except ImportError:
-                continue
+            candidates = [
+                os.path.join(folder, f"{module_name}.py"),
+                os.path.join(folder, module_name, "__init__.py"),
+            ]
+            for file_path in candidates:
+                if not os.path.exists(file_path):
+                    continue
+                # Unique module name prevents sys.modules cache collisions
+                # when the same module_name (e.g. "main") is loaded from
+                # different agent folders across sessions.
+                unique_name = f"_agentscope_agent_{module_name}_{abs(hash(folder))}"
+                try:
+                    spec = importlib.util.spec_from_file_location(unique_name, file_path)
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    for fn_name in ["run", "invoke", "agent", "chat"]:
+                        fn = getattr(mod, fn_name, None)
+                        if callable(fn):
+                            self._agent_module = mod
+                            return fn
+                except Exception as e:
+                    errors.append(f"{file_path}: {type(e).__name__}: {e}")
+                    continue
+
         raise RuntimeError(
             f"Could not load agent from {folder}. "
             "Ensure the folder contains main.py or __init__.py "
-            "with a callable named 'run', 'invoke', or 'agent'."
+            "with a callable named 'run', 'invoke', or 'agent'.\n"
+            + ("\nImport errors:\n" + "\n".join(errors) if errors else "")
         )
 
     def run(self, agent_input: str, run_id: str) -> AgentTrace:
@@ -134,7 +163,6 @@ class AgentRunner:
                 ))
 
             elif t == "tool_end":
-                # Match back to the most recent tool_start name
                 tool = normalized[-1].tool_name if normalized else ""
                 lat = (time.time() - pending_start.pop(tool, time.time())) * 1000
                 normalized.append(TraceEvent(
