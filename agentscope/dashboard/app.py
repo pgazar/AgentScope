@@ -98,7 +98,7 @@ with gr.Blocks(title="AgentScope") as demo:
     eval_inputs_text = gr.Textbox(
         label="Evaluation inputs (one query per line)",
         lines=4,
-        placeholder="What is the refund policy?\nHow do I reset my password?",
+        placeholder="Single-turn: one query per line\nMulti-turn (turn_type=multi): each line is one conversation turn",
         value="What was the revenue for Q3?",
     )
 

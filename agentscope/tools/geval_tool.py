@@ -105,8 +105,12 @@ def run(state: AgentState) -> AgentState:
                 scores[m.name] = metric_scores
             log.info(f"geval {m.name}: {metric_scores}")
     else:
-        turns = [Turn(role=t.get("role", "user"), content=t.get("content", t["output"])) for t in responses]
-        tc    = ConversationalTestCase(turns=turns)
+        # Build alternating user/assistant turns from all traces
+        turns = []
+        for r in responses:
+            turns.append(Turn(role="user",      content=r["input"]))
+            turns.append(Turn(role="assistant", content=r["output"]))
+        tc = ConversationalTestCase(turns=turns)
         model = _build_model(model_name)
         for name, criteria in MULTI_TURN_CRITERIA.items():
             try:
