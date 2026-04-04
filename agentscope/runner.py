@@ -8,6 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
+from agentscope.otel import inject_trace_context, mark_span_error, mark_span_ok, set_span_attributes, start_span
 from agentscope.tracer import AgentScopeCallbackHandler
 from agentscope.trace_audit import summarize_trace
 
@@ -81,6 +82,7 @@ class AgentRunner:
         "MISTRAL_",
         "NO_PROXY",
         "OPENAI_",
+        "OTEL_",
         "PG",
         "PINECONE_",
         "POSTGRES_",
@@ -192,15 +194,26 @@ class AgentRunner:
     def _run_inprocess(self, agent_input: str, run_id: str) -> AgentTrace:
         self._ensure_loaded()
         handler = AgentScopeCallbackHandler()
-        start = time.perf_counter()
-        try:
-            sig = inspect.signature(self._agent_fn)
-            if "callbacks" in sig.parameters:
-                output = self._agent_fn(agent_input, callbacks=[handler])
-            else:
-                output = self._agent_fn(agent_input)
-        except Exception as e:
-            output = f"[AgentRunner error: {e}]"
+        with start_span(
+            "agentscope.target_agent.inproc",
+            tracer_name="agentscope.runner",
+            attributes={
+                "agentscope.run_id": run_id,
+                "agentscope.agent_folder": self.agent_folder,
+                "agentscope.agent_model": self.agent_model,
+            },
+        ) as span:
+            start = time.perf_counter()
+            try:
+                sig = inspect.signature(self._agent_fn)
+                if "callbacks" in sig.parameters:
+                    output = self._agent_fn(agent_input, callbacks=[handler])
+                else:
+                    output = self._agent_fn(agent_input)
+                mark_span_ok(span)
+            except Exception as e:
+                mark_span_error(span, e)
+                output = f"[AgentRunner error: {e}]"
 
         total_ms = (time.perf_counter() - start) * 1000
         events = self._normalize(handler.traces)
@@ -229,17 +242,32 @@ class AgentRunner:
             "agent_input": agent_input,
             "run_id": run_id,
             "timeout_s": self.timeout_s,
+            "otel_trace_context": inject_trace_context({"run_id": run_id}),
         }
         try:
-            result = subprocess.run(
-                [sys.executable, "-m", "agentscope.runner_worker"],
-                input=json.dumps(payload),
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_s,
-                cwd=abs_folder,
-                env=self._build_subprocess_env(repo_root),
-            )
+            with start_span(
+                "agentscope.target_agent.subprocess",
+                tracer_name="agentscope.runner",
+                attributes={
+                    "agentscope.run_id": run_id,
+                    "agentscope.agent_folder": abs_folder,
+                    "agentscope.agent_model": self.agent_model,
+                },
+            ) as span:
+                result = subprocess.run(
+                    [sys.executable, "-m", "agentscope.runner_worker"],
+                    input=json.dumps(payload),
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_s,
+                    cwd=abs_folder,
+                    env=self._build_subprocess_env(repo_root),
+                )
+                set_span_attributes(span, {"agentscope.subprocess.returncode": result.returncode})
+                if result.returncode == 0:
+                    mark_span_ok(span)
+                else:
+                    mark_span_error(span, RuntimeError(result.stderr.strip() or "target agent subprocess failed"))
         except subprocess.TimeoutExpired:
             return self._error_trace(
                 run_id=run_id,

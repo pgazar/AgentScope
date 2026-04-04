@@ -1,3 +1,22 @@
+x-agentscope-common: &agentscope-common
+  build: .
+  environment:
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    OPENAI_API_KEY: ${OPENAI_API_KEY}
+    DATABASE_URL: postgresql://postgres:agentscope@postgres:5432/agentscope
+  volumes:
+    - ./outputs:/app/outputs
+    - ./config.yaml:/app/config.yaml
+    # Mount your agents directory into the container at /agents.
+    # Set AGENTS_DIR in your .env to point to your agents folder.
+    # Default points to the AgentScope tests/ folder (reference agents only).
+    - ${AGENTS_DIR:-./tests}:/agents
+  depends_on:
+    - postgres
+  extra_hosts:
+    # Allows the container to reach services running on your Mac
+    - "host.docker.internal:host-gateway"
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -9,27 +28,16 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
-  agentscope:
-    build: .
+  api:
+    <<: *agentscope-common
+    ports:
+      - "8000:8000"
+    command: uvicorn agentscope.api.main:app --host 0.0.0.0 --port 8000
+
+  dashboard:
+    <<: *agentscope-common
     ports:
       - "7860:7860"
-      - "8000:8000"
-    environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      DATABASE_URL: postgresql://postgres:agentscope@postgres:5432/agentscope
-    volumes:
-      - ./outputs:/app/outputs
-      - ./config.yaml:/app/config.yaml
-      # Mount your agents directory into the container at /agents.
-      # Set AGENTS_DIR in your .env to point to your agents folder.
-      # Default points to the AgentScope tests/ folder (reference agents only).
-      - ${AGENTS_DIR:-./tests}:/agents
-    depends_on:
-      - postgres
-    extra_hosts:
-      # Allows the container to reach services running on your Mac
-      - "host.docker.internal:host-gateway"
     command: python -m agentscope.dashboard.app
 
 volumes:

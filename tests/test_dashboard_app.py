@@ -42,7 +42,10 @@ def test_dashboard_run_uses_queued_flow(monkeypatch):
     )
     monkeypatch.setattr(
         "agentscope.dashboard.app.enqueue_run",
-        lambda state, source="dashboard": {"run_id": state["run_id"], "status": "queued"},
+        lambda state, source="dashboard": (
+            {"run_id": state["run_id"], "status": "queued"}
+            if "otel_trace_context" in state else (_ for _ in ()).throw(AssertionError("missing otel_trace_context"))
+        ),
     )
 
     statuses = iter([
@@ -65,6 +68,7 @@ def test_dashboard_run_uses_queued_flow(monkeypatch):
         progress=progress,
     )
 
-    assert len(output) == 5
+    assert len(output) == 6
+    assert output[0].startswith("<div")
     assert progress.calls[0][1].startswith("Queued run dash-run")
     assert progress.calls[-1][1] == "Complete: dash-run"

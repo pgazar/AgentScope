@@ -7,6 +7,7 @@ import uuid
 
 from agentscope.intake.intake_agent import IntakeAgent
 from agentscope.config import load_config
+from agentscope.logging_setup import configure_logging
 from agentscope.run_store import (
     create_run,
     list_runs,
@@ -85,6 +86,7 @@ def build_run_state(
         "adversarial_results": None,
         "synth_results": None,
         "final_report": None,
+        "otel_trace_context": {},
         "config": cfg.model_dump(),
     }
 
@@ -118,9 +120,11 @@ def launch_worker(run_id: str) -> int:
     record = load_run(run_id)
     if record is None:
         raise ValueError(f"run not found: {run_id}")
+    log = configure_logging(run_id=run_id, component="job_queue")
 
     existing_pid = record.get("worker_pid")
     if worker_is_alive(existing_pid):
+        log.info("worker_already_alive", worker_pid=existing_pid)
         return existing_pid
 
     proc = subprocess.Popen(
@@ -137,11 +141,13 @@ def launch_worker(run_id: str) -> int:
         enqueued_at=record.get("enqueued_at") or utc_now(),
         state_path=record.get("state_path") or run_state_path(run_id),
     )
+    log.info("worker_launched", worker_pid=proc.pid)
     return proc.pid
 
 
 def enqueue_run(state: dict, source: str = "api") -> dict:
     run_id = state["run_id"]
+    log = configure_logging(run_id=run_id, component="job_queue")
     state_path = save_state(run_id, state)
     create_run(
         run_id,
@@ -159,17 +165,27 @@ def enqueue_run(state: dict, source: str = "api") -> dict:
             "enqueued_at": utc_now(),
         },
     )
+    log.info(
+        "run_created",
+        source=source,
+        agent_folder=state["agent_folder"],
+        agent_type=state["agent_type"],
+        turn_type=state["turn_type"],
+        active_tools=state["active_tools"],
+    )
     launch_worker(run_id)
     return load_run(run_id)
 
 
 def recover_incomplete_runs() -> list[str]:
+    log = configure_logging(component="job_queue")
     recovered: list[str] = []
     for record in list_runs({"queued", "running"}):
         run_id = record["run_id"]
 
         if load_report(run_id) is not None:
             update_run(run_id, status="completed", stage="done", pct=1.0, report_path=report_path(run_id))
+            log.info("recovery_marked_completed", run_id=run_id)
             continue
 
         if not os.path.exists(record.get("state_path", run_state_path(run_id))):
@@ -180,6 +196,7 @@ def recover_incomplete_runs() -> list[str]:
                 error={"type": "MissingState", "message": "state file missing; run cannot be recovered"},
                 finished_at=utc_now(),
             )
+            log.warning("recovery_missing_state", run_id=run_id)
             continue
 
         if worker_is_alive(record.get("worker_pid")):
@@ -188,5 +205,6 @@ def recover_incomplete_runs() -> list[str]:
         update_run(run_id, status="queued", stage="recovered", pct=0.0, recovered_at=utc_now())
         launch_worker(run_id)
         recovered.append(run_id)
+        log.info("run_recovered", run_id=run_id)
 
     return recovered

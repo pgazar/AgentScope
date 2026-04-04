@@ -1,9 +1,64 @@
+from html import escape
+
 import plotly.graph_objects as go
-from agentscope.dashboard.colors import color_for_metric
+from agentscope.dashboard.colors import GRAY, color_for_metric
 
 
 def _num(value, default=0.0):
     return value if isinstance(value, (int, float)) else default
+
+
+def _fmt_metric(value, kind: str = "score") -> str:
+    if value is None:
+        return "N/A"
+    if kind == "currency":
+        return f"${value:.5f}"
+    return f"{value:.2f}"
+
+
+def _card_html(title: str, value: str, color: str) -> str:
+    safe_title = escape(title)
+    safe_value = escape(value)
+    bg = color if color != GRAY else "#e5e7eb"
+    fg = "#ffffff" if color != GRAY else "#374151"
+    return (
+        f"<div style='flex:1; min-width:150px; border-radius:12px; padding:14px 16px; "
+        f"background:{bg}; color:{fg}; box-shadow:0 1px 3px rgba(0,0,0,0.08);'>"
+        f"<div style='font-size:12px; opacity:0.92; margin-bottom:6px;'>{safe_title}</div>"
+        f"<div style='font-size:24px; font-weight:700; line-height:1.1;'>{safe_value}</div>"
+        "</div>"
+    )
+
+
+def summary_cards_html(report: dict | None) -> str:
+    report = report or {}
+    eval_results = report.get("eval_results", report)
+    ir = eval_results.get("ir") or {}
+    behavior = eval_results.get("behavior") or {}
+    geval = eval_results.get("geval") or {}
+    cost = eval_results.get("cost") or {}
+
+    scores = geval.get("scores", {}) if isinstance(geval, dict) else {}
+    composite_inputs = []
+    for key, value in scores.items():
+        if not isinstance(value, (int, float)):
+            continue
+        composite_inputs.append(1.0 - value if key == "hallucination" else value)
+    composite = round(sum(composite_inputs) / len(composite_inputs), 4) if composite_inputs else None
+
+    cards = [
+        _card_html("G-Eval Composite", _fmt_metric(composite), color_for_metric(composite, "geval")),
+        _card_html("Hallucination", _fmt_metric(scores.get("hallucination")), color_for_metric(scores.get("hallucination"), "hallu")),
+        _card_html("Tool Accuracy", _fmt_metric(behavior.get("tool_accuracy")), color_for_metric(behavior.get("tool_accuracy"), "agent")),
+        _card_html("nDCG", _fmt_metric(ir.get("ndcg")), color_for_metric(ir.get("ndcg"), "ir")),
+        _card_html("Cost / Query", _fmt_metric(cost.get("cost_per_query"), "currency"), color_for_metric(cost.get("cost_per_query"), "cost_usd")),
+    ]
+
+    return (
+        "<div style='display:flex; flex-wrap:wrap; gap:12px; margin:6px 0 14px 0;'>"
+        + "".join(cards)
+        + "</div>"
+    )
 
 
 def ir_chart(ir_results: dict) -> go.Figure:

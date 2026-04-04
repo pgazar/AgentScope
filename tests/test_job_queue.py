@@ -60,6 +60,7 @@ def test_enqueue_run_persists_state_and_record(tmp_path, monkeypatch):
 
     assert record["run_id"] == "queue-test"
     assert load_state("queue-test")["run_id"] == "queue-test"
+    assert load_state("queue-test")["otel_trace_context"] == {}
     assert launched == ["queue-test"]
 
 

@@ -2,7 +2,7 @@ import pytest
 from pathlib import Path
 from fastapi.testclient import TestClient
 from agentscope.api.main import app
-from agentscope.run_store import create_run, load_run, report_path, save_state
+from agentscope.run_store import create_run, load_run, load_state, report_path, save_state
 
 client = TestClient(app, raise_server_exceptions=False)
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +55,7 @@ def test_evaluate_returns_run_id(monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert "run_id" in data
+    assert "otel_trace_context" in load_state(data["run_id"])
 
 
 def test_evaluate_returns_status_running(monkeypatch):
