@@ -82,6 +82,8 @@ Evaluations run in a **background job queue** — the dashboard stays responsive
 
 ## Sample results — sample agentic RAG system
 
+![AgentScope dashboard — sample agentic RAG system evaluation](docs/dashboard_screenshot.png)
+
 Evaluated against a 4-tool ReAct RAG agent (PostgreSQL + pgvector, hybrid retrieval, Claude Haiku).
 Query: *"What was the revenue for Q3?"*
 
