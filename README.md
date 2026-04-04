@@ -86,12 +86,13 @@ The dashboard exposes:
 - single-turn or multi-turn evaluation inputs
 - agent-type selection: `rag`, `tool_use`, `multi_agent`, `hybrid`
 
-The current dashboard implementation shows 5 chart panels:
-  - IR metrics
-  - agentic metrics
-  - response quality
-  - cost analysis
-  - safety and robustness
+The current dashboard implementation shows five chart panels:
+
+- IR metrics
+- agentic metrics
+- response quality
+- cost analysis
+- safety and robustness
 
 The dashboard stays responsive during execution and polls the queued run until the final report is ready. It does not stream each panel independently as stages finish; it renders the updated outputs when the completed report is available.
 
@@ -203,6 +204,7 @@ The Compose stack includes:
 - `dashboard` on `localhost:7860`
 - `api` on `localhost:8000`
 - `postgres` with `pgvector` on `localhost:5432`
+- `otel-collector` with OTLP/HTTP on `localhost:4318` and health on `localhost:13133`
 
 By default, Compose mounts your agents directory at `/agents`. Set `AGENTS_DIR` in your environment if you want something other than the repo's `tests/` folder mounted.
 
@@ -335,6 +337,51 @@ You can also use:
 - `OTEL_EXPORTER_OTLP_TRACES_HEADERS`
 
 If `AGENTSCOPE_OTEL_ENABLED=1` is set without an explicit endpoint, AgentScope defaults to `http://127.0.0.1:4318/v1/traces`.
+
+### Running a local OTLP receiver
+
+The repository includes an OpenTelemetry Collector config in [`otel-collector-config.yaml`](otel-collector-config.yaml).
+
+If you are using Docker Compose, the easiest path is:
+
+```bash
+docker compose up -d otel-collector
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:13133/
+```
+
+Then run AgentScope locally with:
+
+```bash
+export AGENTSCOPE_OTEL_ENABLED=1
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+python -m agentscope.dashboard.app
+```
+
+To watch the raw traces arriving at the bundled collector:
+
+```bash
+docker logs -f agenticscope-otel-collector-1
+```
+
+The bundled collector uses the `debug` exporter, so traces are printed to the collector logs.
+
+If you run the full Compose stack, the `dashboard` and `api` services are already configured to export OTLP traces to the bundled collector at `http://otel-collector:4318`.
+
+### Common local issue: port 7860 already in use
+
+If the Docker dashboard is already running on `7860`, you can keep it running and launch a local dashboard on another port:
+
+```bash
+export AGENTSCOPE_OTEL_ENABLED=1
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export GRADIO_SERVER_PORT=7861
+python -m agentscope.dashboard.app
+```
 
 ---
 

@@ -4,6 +4,8 @@ x-agentscope-common: &agentscope-common
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     OPENAI_API_KEY: ${OPENAI_API_KEY}
     AGENTSCOPE_RUN_STORE_BACKEND: db
+    AGENTSCOPE_OTEL_ENABLED: ${AGENTSCOPE_OTEL_ENABLED:-1}
+    OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
     DATABASE_URL: postgresql://postgres:agentscope@postgres:5432/agentscope
   volumes:
     - ./outputs:/app/outputs
@@ -14,13 +16,25 @@ x-agentscope-common: &agentscope-common
     - ${AGENTS_DIR:-./tests}:/agents
   depends_on:
     - postgres
+    - otel-collector
   extra_hosts:
     # Allows the container to reach services running on your Mac
     - "host.docker.internal:host-gateway"
 
 services:
+  otel-collector:
+    image: otel/opentelemetry-collector:0.111.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    ports:
+      - "4318:4318"
+      - "13133:13133"
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+
   postgres:
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: agentscope
       POSTGRES_DB: agentscope
@@ -31,12 +45,14 @@ services:
 
   api:
     <<: *agentscope-common
+    restart: unless-stopped
     ports:
       - "8000:8000"
     command: uvicorn agentscope.api.main:app --host 0.0.0.0 --port 8000
 
   dashboard:
     <<: *agentscope-common
+    restart: unless-stopped
     ports:
       - "7860:7860"
     command: python -m agentscope.dashboard.app
