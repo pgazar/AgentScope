@@ -1,6 +1,6 @@
 import pytest
-from agentscope.tools.cost_analyzer import compute_query_cost, compute_latencies, MODEL_PRICING
-from agentscope.runner import TraceEvent
+from agentscope.tools.cost_analyzer import compute_query_cost, compute_latencies, MODEL_PRICING, run
+from agentscope.runner import AgentTrace, TraceEvent
 
 
 def _llm_events(prompt_tokens: int, completion_tokens: int, latency_ms: float):
@@ -77,3 +77,16 @@ def test_latencies_single():
     lats = compute_latencies(traces)
     assert lats["p50"] == pytest.approx(2000.0)
     assert lats["p95"] == pytest.approx(2000.0)
+
+
+def test_run_not_scoreable_without_trace_data():
+    state = {
+        "traces": [AgentTrace(run_id="1", agent_input="q", agent_output="a", events=[])],
+        "agent_model": "claude-sonnet-4-5",
+        "geval_results": {"scores": {}},
+        "behavior_results": {},
+        "trace_diagnostics": {"scoreability": {"cost": False}},
+    }
+    result = run(state)
+    assert result["cost_results"]["scoreable"] is False
+    assert result["cost_results"]["cost_per_query"] is None

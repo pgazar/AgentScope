@@ -2,11 +2,14 @@ import time
 import importlib
 import importlib.util
 import inspect
+import json
 import os
+import subprocess
 import sys
 from dataclasses import dataclass, field
 
 from agentscope.tracer import AgentScopeCallbackHandler
+from agentscope.trace_audit import summarize_trace
 
 
 @dataclass
@@ -30,6 +33,7 @@ class AgentTrace:
     agent_output: str
     events: list[TraceEvent] = field(default_factory=list)
     total_latency_ms: float = 0.0
+    diagnostics: dict = field(default_factory=dict)
 
 
 class AgentRunner:
@@ -46,11 +50,90 @@ class AgentRunner:
         Requires one import added to the target agent's entry point.
     """
 
-    def __init__(self, agent_folder: str, agent_model: str = "unknown"):
+    ENV_ALLOWLIST = {
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "PATH",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "TMPDIR",
+        "USER",
+        "VIRTUAL_ENV",
+    }
+    ENV_PREFIXES = (
+        "AGENTSCOPE_",
+        "ANTHROPIC_",
+        "AWS_",
+        "AZURE_",
+        "CHROMA_",
+        "COHERE_",
+        "DATABASE_",
+        "DB_",
+        "DEEPEVAL_",
+        "ELASTIC_",
+        "GOOGLE_",
+        "HF_",
+        "HUGGINGFACE_",
+        "LANGCHAIN_",
+        "MISTRAL_",
+        "NO_PROXY",
+        "OPENAI_",
+        "PG",
+        "PINECONE_",
+        "POSTGRES_",
+        "QDRANT_",
+        "REDIS_",
+        "REQUESTS_CA_BUNDLE",
+        "SERPAPI_",
+        "TAVILY_",
+        "VOYAGE_",
+        "WEAVIATE_",
+    )
+
+    def __init__(
+        self,
+        agent_folder: str,
+        agent_model: str = "unknown",
+        mode: str | None = None,
+        timeout_s: int | None = None,
+    ):
         self.agent_folder = agent_folder
         self.agent_model = agent_model  # model name of the EVALUATED agent
         self._agent_module = None
-        self._agent_fn = self._load_agent(agent_folder)
+        self._agent_fn = None
+        self.mode = mode or os.environ.get("AGENTSCOPE_RUNNER_MODE", "subprocess")
+        self.timeout_s = timeout_s or int(os.environ.get("AGENTSCOPE_AGENT_TIMEOUT_S", "90"))
+
+    @classmethod
+    def validate_agent_folder(cls, folder: str) -> dict:
+        if not folder:
+            return {"ok": False, "reason": "agent_folder is required"}
+        if not os.path.isdir(folder):
+            return {"ok": False, "reason": f"agent folder does not exist: {folder}"}
+
+        for module_name in ["main", "__init__", "agent", "app"]:
+            candidates = [
+                os.path.join(folder, f"{module_name}.py"),
+                os.path.join(folder, module_name, "__init__.py"),
+            ]
+            for file_path in candidates:
+                if os.path.exists(file_path):
+                    return {"ok": True, "entrypoint": file_path}
+
+        return {
+            "ok": False,
+            "reason": (
+                "expected one of main.py, __init__.py, agent.py, or app.py "
+                "inside the agent folder"
+            ),
+        }
+
+    def _ensure_loaded(self):
+        if self._agent_fn is None:
+            self._agent_fn = self._load_agent(self.agent_folder)
 
     def _load_agent(self, folder: str):
         """
@@ -102,6 +185,12 @@ class AgentRunner:
         )
 
     def run(self, agent_input: str, run_id: str) -> AgentTrace:
+        if self.mode == "subprocess":
+            return self._run_subprocess(agent_input, run_id)
+        return self._run_inprocess(agent_input, run_id)
+
+    def _run_inprocess(self, agent_input: str, run_id: str) -> AgentTrace:
+        self._ensure_loaded()
         handler = AgentScopeCallbackHandler()
         start = time.perf_counter()
         try:
@@ -121,12 +210,103 @@ class AgentRunner:
             agent_output=str(output),
             events=events,
             total_latency_ms=round(total_ms, 2),
+            diagnostics={"runner_mode": "inproc"},
         )
         # If the agent module exposes inject_trace_events(), call it to backfill
         # events that bypass the LangChain callback system (e.g. capstone-rag)
         inject_fn = getattr(self._agent_module, "inject_trace_events", None)
         if callable(inject_fn):
             inject_fn(trace)
+        trace.diagnostics.update(summarize_trace(trace))
+        return trace
+
+    def _run_subprocess(self, agent_input: str, run_id: str) -> AgentTrace:
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        abs_folder = os.path.abspath(self.agent_folder)
+        payload = {
+            "agent_folder": abs_folder,
+            "agent_model": self.agent_model,
+            "agent_input": agent_input,
+            "run_id": run_id,
+            "timeout_s": self.timeout_s,
+        }
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "agentscope.runner_worker"],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_s,
+                cwd=abs_folder,
+                env=self._build_subprocess_env(repo_root),
+            )
+        except subprocess.TimeoutExpired:
+            return self._error_trace(
+                run_id=run_id,
+                agent_input=agent_input,
+                message=f"timeout after {self.timeout_s}s",
+            )
+        except Exception as e:
+            return self._error_trace(
+                run_id=run_id,
+                agent_input=agent_input,
+                message=f"subprocess launch failed: {e}",
+            )
+
+        if result.returncode != 0:
+            err = result.stderr.strip() or result.stdout.strip() or "unknown subprocess error"
+            return self._error_trace(run_id=run_id, agent_input=agent_input, message=err[-400:])
+
+        try:
+            payload = json.loads(result.stdout.strip().splitlines()[-1])
+            trace = deserialize_trace(payload)
+        except Exception as e:
+            return self._error_trace(
+                run_id=run_id,
+                agent_input=agent_input,
+                message=f"invalid subprocess payload: {e}",
+            )
+
+        child_mode = trace.diagnostics.get("runner_mode")
+        trace.diagnostics["runner_mode"] = "subprocess"
+        if child_mode:
+            trace.diagnostics["child_runner_mode"] = child_mode
+        trace.diagnostics.update(summarize_trace(trace))
+        return trace
+
+    def _build_subprocess_env(self, repo_root: str) -> dict:
+        env = {}
+        passthrough = {
+            key.strip()
+            for key in os.environ.get("AGENTSCOPE_AGENT_ENV_PASSTHROUGH", "").split(",")
+            if key.strip()
+        }
+
+        for key, value in os.environ.items():
+            if (
+                key in self.ENV_ALLOWLIST
+                or key in passthrough
+                or key.startswith(self.ENV_PREFIXES)
+            ):
+                env[key] = value
+
+        py_paths = [repo_root]
+        if env.get("PYTHONPATH"):
+            py_paths.append(env["PYTHONPATH"])
+        env["PYTHONPATH"] = os.pathsep.join(py_paths)
+        env["AGENTSCOPE_RUNNER_MODE"] = "inproc"
+        return env
+
+    def _error_trace(self, run_id: str, agent_input: str, message: str) -> AgentTrace:
+        trace = AgentTrace(
+            run_id=run_id,
+            agent_input=agent_input,
+            agent_output=f"[AgentRunner error: {message}]",
+            events=[],
+            total_latency_ms=0.0,
+            diagnostics={"runner_mode": "subprocess"},
+        )
+        trace.diagnostics.update(summarize_trace(trace))
         return trace
 
     def _normalize(self, raw: list[dict]) -> list[TraceEvent]:
@@ -186,3 +366,41 @@ class AgentRunner:
                 ))
 
         return normalized
+
+
+def serialize_trace_event(event: TraceEvent) -> dict:
+    return {
+        "event_type": event.event_type,
+        "tool_name": event.tool_name,
+        "tool_args": event.tool_args,
+        "tool_output": event.tool_output,
+        "prompt_tokens": event.prompt_tokens,
+        "completion_tokens": event.completion_tokens,
+        "retrieval_docs": event.retrieval_docs,
+        "latency_ms": event.latency_ms,
+        "agent_model": event.agent_model,
+        "timestamp": event.timestamp,
+    }
+
+
+def serialize_trace(trace: AgentTrace) -> dict:
+    return {
+        "run_id": trace.run_id,
+        "agent_input": trace.agent_input,
+        "agent_output": trace.agent_output,
+        "events": [serialize_trace_event(event) for event in trace.events],
+        "total_latency_ms": trace.total_latency_ms,
+        "diagnostics": trace.diagnostics,
+    }
+
+
+def deserialize_trace(payload: dict) -> AgentTrace:
+    events = [TraceEvent(**event) for event in payload.get("events", [])]
+    return AgentTrace(
+        run_id=payload["run_id"],
+        agent_input=payload["agent_input"],
+        agent_output=payload["agent_output"],
+        events=events,
+        total_latency_ms=payload.get("total_latency_ms", 0.0),
+        diagnostics=payload.get("diagnostics", {}),
+    )

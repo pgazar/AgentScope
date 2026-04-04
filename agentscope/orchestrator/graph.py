@@ -25,6 +25,7 @@ from langgraph.graph import StateGraph, END
 
 from agentscope.orchestrator.state import AgentState
 from agentscope.runner import AgentRunner
+from agentscope.trace_audit import summarize_traces
 
 log = logging.getLogger("agentscope.graph")
 logging.basicConfig(level=logging.INFO)
@@ -41,7 +42,10 @@ def _run_agent(state: AgentState) -> dict:
         trace = runner.run(inp, state["run_id"])
         traces.append(trace)
     log.info(f"run_agent: produced {len(traces)} traces")
-    return {"traces": traces}
+    return {
+        "traces": traces,
+        "trace_diagnostics": summarize_traces(traces),
+    }
 
 
 def _load_node(module_path: str, fn_name: str = "run"):

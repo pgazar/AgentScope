@@ -10,12 +10,14 @@ class ReportCompiler:
         run_id = state["run_id"]
         report = {
             "run_id": run_id,
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "agent_folder": state["agent_folder"],
             "agent_type": state["agent_type"],
             "turn_type": state["turn_type"],
             "config": state["config"],
+            "trace_diagnostics": state.get("trace_diagnostics"),
             "eval_results": {
+                "trace":       state.get("trace_diagnostics"),
                 "ir":          state.get("ir_results"),
                 "behavior":    state.get("behavior_results"),
                 "geval":       state.get("geval_results"),

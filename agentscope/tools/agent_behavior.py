@@ -309,23 +309,27 @@ def score(name, criteria, input_text, output_text):
     tc = LLMTestCase(input=input_text, actual_output=output_text)
     try:
         asyncio.run(m.a_measure(tc))
-        return m.score
+        return {{"score": m.score, "ok": True}}
     except Exception as e:
-        return 0.0
+        return {{"score": None, "ok": False, "error": str(e)}}
 
-results = {{}}
+results = {{"infra_failures": []}}
 
 if tool_sequence:
-    results["plan_success"] = score(
+    plan = score(
         "plan_success",
         PLAN_SUCCESS_CRITERIA["plan_success"],
         "Evaluate the agent\'s tool execution plan",
         f"Tool sequence executed: {{' -> '.join(tool_sequence)}}"
     )
+    results["plan_success"] = plan["score"]
+    if not plan["ok"]:
+        results["infra_failures"].append({{"metric": "plan_success", "error": plan.get("error", "unknown")}})
 else:
     results["plan_success"] = 0.0
 
 arg_scores = []
+arg_failures = 0
 for call in tool_calls:
     s = score(
         "argument_correctness",
@@ -333,8 +337,13 @@ for call in tool_calls:
         str(call.get("args", {{}})),
         f"Tool: {{call.get('tool')}} | Args: {{call.get('args', {{}})}}"
     )
-    arg_scores.append(s)
-results["arg_correctness"] = round(sum(arg_scores)/len(arg_scores), 4) if arg_scores else 0.0
+    if s["ok"]:
+        arg_scores.append(s["score"])
+    else:
+        arg_failures += 1
+results["arg_correctness"] = round(sum(arg_scores)/len(arg_scores), 4) if arg_scores else None
+if arg_failures:
+    results["infra_failures"].append({{"metric": "argument_correctness", "failed_cases": arg_failures}})
 
 print(json.dumps(results))
 """
@@ -355,15 +364,23 @@ print(json.dumps(results))
                 except json.JSONDecodeError:
                     continue
         warnings.warn(f"agent_behavior subprocess failed: {r.stderr[-300:]}")
-        return {"plan_success": 0.0, "arg_correctness": 0.0}
+        return {
+            "plan_success": None,
+            "arg_correctness": None,
+            "infra_failures": [{"metric": "behavior_geval_subprocess", "error": r.stderr[-300:]}],
+        }
     except subprocess.TimeoutExpired:
         warnings.warn("agent_behavior G-Eval subprocess timed out")
-        return {"plan_success": 0.0, "arg_correctness": 0.0}
+        return {
+            "plan_success": None,
+            "arg_correctness": None,
+            "infra_failures": [{"metric": "behavior_geval_subprocess", "error": "timeout"}],
+        }
     finally:
         os.unlink(tmp)
 
 
-def ghost_action_rate(traces: list, agent_outputs: list[str]) -> dict:
+def ghost_action_rate(traces: list) -> dict:
     """
     Detects ghost actions: claims of tool execution in the final answer
     that are not backed by actual tool calls in the trace.
@@ -377,9 +394,11 @@ def ghost_action_rate(traces: list, agent_outputs: list[str]) -> dict:
     combined = "|".join(ACTION_PATTERNS)
 
     ghost_count = 0
-    total = len(agent_outputs)
+    total = len(traces)
 
-    for output, trace_events in zip(agent_outputs, [traces]):
+    for trace in traces:
+        output = getattr(trace, "agent_output", "")
+        trace_events = getattr(trace, "events", []) or []
         claimed_action = bool(re.search(combined, output, re.IGNORECASE))
         has_tool_call  = any(
             hasattr(e, "event_type") and e.event_type == "tool_start"
@@ -395,6 +414,34 @@ def ghost_action_rate(traces: list, agent_outputs: list[str]) -> dict:
     }
 
 
+def _not_scoreable_result(reason: str, trace_diag: dict) -> dict:
+    return {
+        "scoreable": False,
+        "reason": reason,
+        "tool_accuracy": None,
+        "plan_success": None,
+        "step_budget_efficiency": None,
+        "arg_correctness": None,
+        "convergence": None,
+        "handoff_correctness": None,
+        "step_match": {
+            "exact": None,
+            "precision": None,
+            "recall": None,
+        },
+        "permission_validation": {
+            "permission_violation_rate": None,
+            "safety_score": None,
+            "violations": [],
+            "warnings": [],
+        },
+        "ghost_action_rate": None,
+        "ghost_count": 0,
+        "total_checked": len(trace_diag.get("traces", [])),
+        "trace_status": trace_diag.get("status"),
+    }
+
+
 def run(state: AgentState) -> AgentState:
     import logging as _logging
     _log = _logging.getLogger('agentscope.behavior')
@@ -403,6 +450,14 @@ def run(state: AgentState) -> AgentState:
     all_events = []
     for trace in state["traces"]:
         all_events.extend(trace.events if hasattr(trace, "events") else [])
+
+    trace_diag = state.get("trace_diagnostics") or {}
+    if not trace_diag.get("scoreability", {}).get("behavior", False):
+        state["behavior_results"] = _not_scoreable_result(
+            "no trace events were captured for behavior scoring",
+            trace_diag,
+        )
+        return state
 
     max_steps  = state["config"]["eval"]["max_steps"]
     model_name = state["config"]["judge"]["model"]
@@ -433,9 +488,14 @@ def run(state: AgentState) -> AgentState:
     _log.info('agent_behavior: running G-Eval subprocess')
     geval_scores = _geval_behavior_scores(model_name, tool_sequence, tool_calls_raw)
 
-    agent_outputs = [t.agent_output for t in state["traces"] if hasattr(t, "agent_output")]
-    ghost = ghost_action_rate(all_events, agent_outputs)
+    ghost = ghost_action_rate(state["traces"])
 
     _log.info(f'agent_behavior: done — scores={list(geval_scores.keys())}')
-    state["behavior_results"] = {**det, **geval_scores, **ghost}
+    state["behavior_results"] = {
+        "scoreable": True,
+        "trace_status": trace_diag.get("status"),
+        **det,
+        **geval_scores,
+        **ghost,
+    }
     return state

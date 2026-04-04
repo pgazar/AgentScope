@@ -87,6 +87,8 @@ def test_suite_result_structure():
         result = run_adversarial_suite(safe_agent, suite, "claude-sonnet-4-5")
 
     assert "total_attacks"               in result
+    assert "scored_attacks"              in result
+    assert "infra_failed_attacks"        in result
     assert "resisted"                    in result
     assert "attack_success_rate"         in result
     assert "unsafe_compliance_rate"      in result
@@ -94,3 +96,4 @@ def test_suite_result_structure():
     assert "permission_violation_rate"   in result
     assert "by_category"                 in result
     assert result["total_attacks"] == 2
+    assert result["scored_attacks"] == 2

@@ -1,15 +1,29 @@
 import os
-import uuid
+import time
 import logging
 import gradio as gr
 
 from agentscope.dashboard.charts import ir_chart, agent_chart, geval_chart, cost_chart, adversarial_chart
-from agentscope.orchestrator.graph import build_graph
-from agentscope.intake.intake_agent import IntakeAgent
-from agentscope.config import load_config
+from agentscope.job_queue import build_run_state, enqueue_run, recover_incomplete_runs, validate_run_request
+from agentscope.run_store import load_report, load_run
 
 logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger("agentscope.app")
+
+
+def _empty_plots():
+    return (None, None, None, None, None)
+
+
+def _plots_from_report(report: dict):
+    eval_results = report["eval_results"]
+    return (
+        ir_chart(eval_results["ir"] or {}),
+        agent_chart(eval_results["behavior"] or {}),
+        geval_chart(eval_results["geval"] or {}),
+        cost_chart(eval_results["cost"] or {}),
+        adversarial_chart(eval_results["adversarial"] or {}),
+    )
 
 
 def run_evaluation(
@@ -22,62 +36,71 @@ def run_evaluation(
     turn_type: str,
     progress=gr.Progress(),
 ):
-    cfg = load_config()
-
     eval_inputs = [l.strip() for l in (eval_inputs_text or "").strip().splitlines() if l.strip()]
     if not eval_inputs:
         gr.Warning("Evaluation inputs cannot be empty — enter at least one query in the text box.")
-        return (None, None, None, None, None)
+        return _empty_plots()
 
     # Auto-detect ground_truth.csv in the agent folder (no upload needed)
     _auto_gt = os.path.join(agent_folder, "ground_truth.csv")
-    has_gt = gt_file or os.path.exists(_auto_gt)
-    answers = {
-        "agent_type": agent_type,
-        "turn_type":  turn_type,
-        "has_gt":     "yes" if has_gt else "no",
-        # If GT exists, treat as having a KB so ir_evaluator activates
-        "kb_format":  "pdf" if kb_file else ("markdown" if has_gt else "none"),
-    }
-    intake = IntakeAgent().run(answers)
-    graph  = build_graph(intake["active_tools"])
+    kb_path = kb_file.name if kb_file else None
+    gt_path = gt_file.name if gt_file else (_auto_gt if os.path.exists(_auto_gt) else None)
 
-    state = {
-        "run_id":              str(uuid.uuid4())[:8],
-        "agent_folder":        agent_folder,
-        "agent_model":         agent_model,
-        "eval_inputs":         eval_inputs,
-        "kb_path":             kb_file.name if kb_file else None,
-        "gt_path":             gt_file.name if gt_file else (_auto_gt if os.path.exists(_auto_gt) else None),
-        "agent_type":          intake["agent_type"],
-        "turn_type":           intake["turn_type"],
-        "active_tools":        intake["active_tools"],
-        "expected_tools":      [],
-        "traces":              [],
-        "baseline_geval_scores": {},
-        "ir_results":          None,
-        "behavior_results":    None,
-        "geval_results":       None,
-        "cost_results":        None,
-        "adversarial_results": None,
-        "synth_results":       None,
-        "final_report":        None,
-        "config":              cfg.model_dump(),
-    }
+    try:
+        validate_run_request(
+            agent_folder=agent_folder,
+            eval_inputs=eval_inputs,
+            kb_path=kb_path,
+            gt_path=gt_path,
+        )
+    except ValueError as e:
+        gr.Warning(str(e))
+        return _empty_plots()
 
-    _log.info(f"run_evaluation: folder={agent_folder}, inputs={eval_inputs}, agent_type={agent_type}")
-    progress(0.1, desc="Running agent and collecting traces...")
-    result = graph.invoke(state)
-    progress(1.0, desc="Complete")
-
-    report = result["final_report"]["eval_results"]
-    return (
-        ir_chart(report["ir"]          or {}),
-        agent_chart(report["behavior"] or {}),
-        geval_chart(report["geval"]    or {}),
-        cost_chart(report["cost"]      or {}),
-        adversarial_chart(report["adversarial"] or {}),
+    state = build_run_state(
+        agent_folder=agent_folder,
+        agent_model=agent_model,
+        eval_inputs=eval_inputs,
+        agent_type=agent_type,
+        turn_type=turn_type,
+        kb_path=kb_path,
+        gt_path=gt_path,
     )
+
+    _log.info(f"run_evaluation: queueing run {state['run_id']} folder={agent_folder}")
+    record = enqueue_run(state, source="dashboard")
+    run_id = record["run_id"]
+    progress(0.02, desc=f"Queued run {run_id}")
+
+    deadline = time.time() + 60 * 30
+    while time.time() < deadline:
+        record = load_run(run_id)
+        if record is None:
+            gr.Warning(f"Run {run_id} disappeared before completion.")
+            return _empty_plots()
+
+        pct = record.get("pct", 0.0)
+        status = record.get("status", "queued")
+        stage = record.get("stage", status)
+        progress(max(0.0, pct if isinstance(pct, (int, float)) else 0.0), desc=f"{status}: {stage}")
+
+        if status == "completed":
+            report = load_report(run_id)
+            if report is None:
+                time.sleep(0.25)
+                continue
+            progress(1.0, desc=f"Complete: {run_id}")
+            return _plots_from_report(report)
+
+        if status == "failed":
+            error = record.get("error", {}).get("message", "unknown error")
+            gr.Warning(f"Run {run_id} failed: {error}")
+            return _empty_plots()
+
+        time.sleep(0.5)
+
+    gr.Warning(f"Run {run_id} did not finish before the dashboard timeout.")
+    return _empty_plots()
 
 
 with gr.Blocks(title="AgentScope") as demo:
@@ -126,4 +149,5 @@ with gr.Blocks(title="AgentScope") as demo:
 
 
 if __name__ == "__main__":
+    recover_incomplete_runs()
     demo.launch(server_name="0.0.0.0", server_port=7860)

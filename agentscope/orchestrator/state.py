@@ -13,6 +13,7 @@ class AgentState(TypedDict):
     active_tools: list[str]
     expected_tools: list[str]      # tool names the agent is expected to call
     traces: list                   # list[AgentTrace] — populated by AgentRunner
+    trace_diagnostics: Optional[dict]
     baseline_geval_scores: Optional[dict]  # {metric_name: [scores]} from a prior run
     ir_results: Optional[dict]
     behavior_results: Optional[dict]

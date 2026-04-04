@@ -36,10 +36,25 @@ def run(state: AgentState) -> AgentState:
     for trace in state["traces"]:
         all_events.extend(trace.events if hasattr(trace, "events") else [])
 
+    trace_diag = state.get("trace_diagnostics") or {}
+    if not trace_diag.get("scoreability", {}).get("cost", False):
+        state["cost_results"] = {
+            "scoreable":         False,
+            "reason":            "trace did not capture token counts or latency observations",
+            "cost_per_query":    None,
+            "cost_per_success":  None,
+            "p50_latency_s":     None,
+            "p95_latency_s":     None,
+            "qc_index":          None,
+            "agent_model":       state.get("agent_model", "claude-sonnet-4-5"),
+        }
+        return state
+
     agent_model = state.get("agent_model", "claude-sonnet-4-5")
 
     geval_scores = state.get("geval_results", {}).get("scores", {}) or {}
-    geval_score = sum(geval_scores.values()) / max(len(geval_scores), 1)
+    numeric_scores = [v for v in geval_scores.values() if isinstance(v, (int, float))]
+    geval_score = sum(numeric_scores) / max(len(numeric_scores), 1) if numeric_scores else 0.0
 
     task_success = state.get("behavior_results", {}).get("plan_success", 0.0) or 0.0
 
@@ -51,6 +66,7 @@ def run(state: AgentState) -> AgentState:
     qc_index  = geval_score / cost_per_query if cost_per_query > 0 else 0.0
 
     state["cost_results"] = {
+        "scoreable":         True,
         "cost_per_query":   round(cost_per_query, 5),
         "cost_per_success": round(cost_per_task, 5) if cost_per_task != float("inf") else None,
         "p50_latency_s":    round(latencies["p50"] / 1000, 3),

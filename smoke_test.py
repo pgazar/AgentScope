@@ -36,6 +36,7 @@ def run():
         "active_tools":         intake["active_tools"],
         "expected_tools":       [],
         "traces":               [],
+        "trace_diagnostics":    None,
         "baseline_geval_scores": {},
         "ir_results":           None,
         "behavior_results":     None,

@@ -45,15 +45,18 @@ def measure_inter_judge_variance(scored: ScoredMetric) -> dict:
     )
 
     secondary_scores = []
-    for tc in scored.test_cases:
+    paired_primary = []
+    failed_cases = []
+    for i, tc in enumerate(scored.test_cases):
         try:
             asyncio.run(secondary_metric.a_measure(tc))
             secondary_scores.append(secondary_metric.score)
+            paired_primary.append(scored.primary_scores[i])
         except Exception as e:
             warnings.warn(f"variance secondary judge failed on {scored.name}: {e}")
-            secondary_scores.append(0.0)
+            failed_cases.append(i)
 
-    deltas = [abs(p - s) for p, s in zip(scored.primary_scores, secondary_scores)]
+    deltas = [abs(p - s) for p, s in zip(paired_primary, secondary_scores)]
     std = float(np.std(deltas)) if deltas else 0.0
     flagged = [i for i, d in enumerate(deltas) if d > VARIANCE_THRESHOLD]
 
@@ -64,6 +67,7 @@ def measure_inter_judge_variance(scored: ScoredMetric) -> dict:
         "mean_delta":          round(float(np.mean(deltas)), 4) if deltas else 0.0,
         "std_deviation":       round(std, 4),
         "high_variance_cases": flagged,
+        "secondary_failures":  failed_cases,
         "stable":              std <= VARIANCE_THRESHOLD,
     }
 

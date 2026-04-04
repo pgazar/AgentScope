@@ -1,12 +1,13 @@
 import pytest
 from agentscope.tools.agent_behavior import (
+    ghost_action_rate,
     tool_selection_accuracy,
     step_budget_efficiency,
     convergence,
     step_match,
     load_permission_schema,
 )
-from agentscope.runner import TraceEvent
+from agentscope.runner import AgentTrace, TraceEvent
 
 
 def _tool_event(name: str) -> TraceEvent:
@@ -99,3 +100,24 @@ def test_permission_schema_loads():
     assert "send_email" in schema
     assert schema["send_email"]["allowed"] is False
     assert schema["rag_retrieve"]["allowed"] is True
+
+
+def test_ghost_action_rate_scores_per_trace():
+    traces = [
+        AgentTrace(
+            run_id="1",
+            agent_input="q1",
+            agent_output="I searched the docs and found the answer.",
+            events=[],
+        ),
+        AgentTrace(
+            run_id="2",
+            agent_input="q2",
+            agent_output="I searched the docs and found the answer.",
+            events=[TraceEvent(event_type="tool_start", tool_name="search")],
+        ),
+    ]
+    result = ghost_action_rate(traces)
+    assert result["ghost_count"] == 1
+    assert result["total_checked"] == 2
+    assert result["ghost_action_rate"] == pytest.approx(0.5)

@@ -104,6 +104,19 @@ def _load_ground_truth(gt_path: str, queries: list[str] = None) -> list[set]:
 
 
 def run(state: AgentState) -> AgentState:
+    trace_diag = state.get("trace_diagnostics") or {}
+    if not trace_diag.get("scoreability", {}).get("ir", False):
+        state["ir_results"] = {
+            "scoreable": False,
+            "reason": "no retrieval events were captured in the trace",
+            "precision_k": None,
+            "recall_k": None,
+            "mrr": None,
+            "ndcg": None,
+            "hit_rate_k": None,
+        }
+        return state
+
     k = state["config"]["eval"]["k"]
     retrieved_lists = _parse_retrievals(state["traces"])
     queries = [t.agent_input for t in state["traces"] if hasattr(t, "agent_input")]
@@ -115,6 +128,7 @@ def run(state: AgentState) -> AgentState:
     relevant_sets   = relevant_sets[:n]
 
     state["ir_results"] = {
+        "scoreable": True,
         "precision_k": float(np.mean([precision_at_k(r, rel, k) for r, rel in zip(retrieved_lists, relevant_sets)])),
         "recall_k":    float(np.mean([recall_at_k(r, rel, k)    for r, rel in zip(retrieved_lists, relevant_sets)])),
         "mrr":         mrr(retrieved_lists, relevant_sets),

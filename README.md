@@ -33,7 +33,7 @@ Panel 3: Response quality    Panel 4: Cost & latency
 Panel 5: Safety & robustness
 ```
 
-Every bar is labeled with its value so panels are readable even when scores are zero.
+Evaluations run in a **background job queue** — the dashboard stays responsive with a live progress bar while the pipeline executes. Each panel renders as soon as its tool finishes rather than waiting for all five.
 
 ---
 
@@ -58,7 +58,7 @@ Every bar is labeled with its value so panels are readable even when scores are 
 | Convergence | Did the agent finish within the allowed step budget? |
 | Step match | Ordered/unordered comparison of actual vs. reference steps |
 | Handoff correctness | Multi-agent only: was context passed accurately? |
-| **Ghost action rate** | **Detects claims of tool execution not backed by actual tool calls in the trace** |
+| Ghost action rate | Detects claims of tool execution not backed by actual tool calls in the trace |
 
 ### Response Quality (G-Eval LLM-as-judge)
 | Metric | Description |
@@ -73,14 +73,14 @@ Every bar is labeled with its value so panels are readable even when scores are 
 ### Cost & Efficiency
 | Metric | Description |
 |---|---|
-| Cost per query | LLM token cost per evaluation query |
+| Cost per query | LLM token cost per evaluation query (from actual API token counts) |
 | Cost per successful task | Cost normalized by plan success rate |
 | p50 / p95 latency | Median and 95th-percentile response times |
 | Quality-cost index | G-Eval score ÷ cost per query |
 
 ---
 
-## Sample results — capstone-rag ReAct agent
+## Sample results — sample agentic RAG system
 
 Evaluated against a 4-tool ReAct RAG agent (PostgreSQL + pgvector, hybrid retrieval, Claude Haiku).
 Query: *"What was the revenue for Q3?"*
@@ -95,10 +95,10 @@ Query: *"What was the revenue for Q3?"*
 | Behavior | Step budget eff. | **1.0** |
 | G-Eval | Task completion | **0.9** |
 | G-Eval | Safety | **1.0** |
-| G-Eval | Hallucination | **0.1** |
-| Cost | Cost/query | **$0.0037** |
-| Cost | p50 latency | **5.9s** |
-| Safety | Adversarial resistance | **75%** |
+| G-Eval | Hallucination | **0.0** |
+| Cost | Cost/query | **$0.00229** |
+| Cost | Quality-cost index | **342.4** |
+| Safety | Adversarial resistance | **67%** |
 
 ---
 
@@ -106,17 +106,20 @@ Query: *"What was the revenue for Q3?"*
 
 | Layer | Technology |
 |---|---|
-| Orchestration | LangGraph (ReAct StateGraph) |
-| LLM judge | G-Eval (DeepEval) + Claude Haiku/Sonnet |
+| Orchestration | LangGraph StateGraph (dynamic per-run graph compilation) |
+| LLM judge | G-Eval (DeepEval) + Claude Haiku/Sonnet, temp=0 |
 | Synth generation | DeepEval Synthesizer |
-| Adversarial testing | Curated YAML prompt suite + G-Eval scoring |
-| Judge reliability | Inter-judge variance + KL calibration drift |
+| Adversarial testing | Curated YAML prompt suite (12 prompts, 4 categories) + concurrent G-Eval scoring |
+| Judge reliability | Inter-judge variance (GPT-4o-mini secondary) + KL calibration drift |
+| Permission validation | LLM semantic matching via Claude Haiku subprocess |
 | Observability | structlog (structured JSON logging) |
-| Dashboard | Gradio + Plotly (5 panels) |
+| Job execution | Background job queue + subprocess-isolated agent runner |
+| Trace auditing | Automatic trace health check before scoring |
+| Dashboard | Gradio + Plotly (5 panels, progressive rendering) |
 | API | FastAPI (`/evaluate`, `/health`) |
-| Deployment | Docker Compose (local) + Modal.com (serverless) |
+| Deployment | Docker Compose (local) + Modal.com (serverless judge) |
 | Config | YAML + Pydantic |
-| Testing | pytest (105 tests) + GitHub Actions CI |
+| Testing | pytest (115 tests) + GitHub Actions CI |
 
 ---
 
@@ -148,7 +151,7 @@ docker compose up
 
 ```bash
 python -m pytest tests/ -q
-# 105 passed
+# 115 passed
 ```
 
 ---
@@ -169,13 +172,25 @@ Point the dashboard at it:
 | Field | Value |
 |---|---|
 | Agent folder path | `your_agent/` |
-| Agent model name | `claude-sonnet-4-5` (or whatever your agent uses) |
+| Agent model name | `claude-haiku-4-5-20251001` (or whatever your agent uses) |
 | Evaluation inputs | one query per line |
 | Agent type | `rag` / `tool_use` / `multi_agent` / `hybrid` |
 
-For **LangChain / LangGraph agents**, AgentScope injects a callback handler automatically — no code changes needed.
+For **LangChain / LangGraph agents**, AgentScope injects a callback handler automatically — no code changes needed (Mode A).
 
-For **custom agents** (like capstone-rag which calls the Anthropic SDK directly), add an optional `inject_trace_events(trace)` function to your `main.py` to backfill retrieval docs and token counts into the trace.
+For **custom agents** that call the Anthropic SDK directly, add an optional `inject_trace_events(trace)` function to your `main.py` to backfill tool calls, retrieval doc keys, and token counts into the trace (Mode B). AgentScope calls this automatically after each agent run.
+
+### Ground truth CSV format
+
+For IR metrics, place a `ground_truth.csv` in your agent folder (auto-detected — no upload needed):
+
+```csv
+question,relevant_docs
+What was the revenue for Q3?,financial_q3_2024:chunk_1|sample_finance:chunk_1
+Who is the CEO?,
+```
+
+The `relevant_docs` column is pipe-separated doc keys. Queries with no relevant docs (empty) are scored as 0.0. The legacy `answer` column (single doc key) is also supported for backward compatibility.
 
 ---
 
@@ -186,7 +201,19 @@ For **custom agents** (like capstone-rag which calls the Anthropic SDK directly)
 | RAG + ground truth CSV | IR evaluator + all behavior + G-Eval + cost + adversarial |
 | RAG, no ground truth | Synth gen → IR evaluator + all behavior + G-Eval + cost + adversarial |
 | Tool-use / multi-agent | Behavior + G-Eval + cost + adversarial (no IR) |
-| Regression testing | Run before and after a change, compare JSON reports |
+| Regression testing | Run before and after a change, compare JSON reports in `outputs/runs/` |
+
+---
+
+## How a run works
+
+1. **Dashboard** validates input and enqueues the run to `job_queue`
+2. **job_worker** picks it up and calls `pipeline_runner.execute_pipeline()`
+3. **runner_worker** (subprocess) loads and runs the agent in isolation — crashes in agent code can't affect AgentScope
+4. **trace_audit** inspects the returned trace and reports which panels will be meaningful
+5. **LangGraph pipeline** dispatches the active evaluation tools sequentially
+6. **ReportCompiler** writes `outputs/runs/{run_id}/run_report.json`
+7. **Dashboard** polls every 0.5s, renders each panel as it becomes available
 
 ---
 
@@ -205,6 +232,8 @@ curl -X POST http://localhost:8000/evaluate \
 curl http://localhost:8000/health
 ```
 
+The `/evaluate` endpoint returns a `run_id` immediately. The evaluation runs in the background; the report is written to `outputs/runs/{run_id}/run_report.json` when complete.
+
 ---
 
 ## Project structure
@@ -212,22 +241,27 @@ curl http://localhost:8000/health
 ```
 agentscope/
 ├── agentscope/
-│   ├── config.py          # Pydantic config + YAML loader
-│   ├── runner.py          # AgentRunner — loads agent, runs inputs, normalizes trace
-│   ├── tracer.py          # LangChain BaseCallbackHandler (Mode A integration)
+│   ├── config.py            # Pydantic config + YAML loader
+│   ├── runner.py            # AgentRunner — loads agent, runs inputs, normalizes trace
+│   ├── runner_worker.py     # Subprocess entry point — runs agent in isolation
+│   ├── tracer.py            # LangChain BaseCallbackHandler (Mode A integration)
+│   ├── trace_audit.py       # Trace health checker — reports scoreability before eval
+│   ├── job_queue.py         # Enqueue, validate, and manage evaluation runs
+│   ├── job_worker.py        # Background worker — executes pipeline from queue
+│   ├── pipeline_runner.py   # Core pipeline execution logic
+│   ├── run_store.py         # Persistent run state and report storage
 │   ├── orchestrator/
-│   │   ├── graph.py       # LangGraph StateGraph
-│   │   └── state.py       # AgentState TypedDict
-│   ├── tools/             # 6 evaluation tools
-│   ├── judge/             # G-Eval criteria, variance, model routing
-│   ├── report/            # JSON report compiler
-│   ├── dashboard/         # Gradio app + Plotly charts
-│   └── api/               # FastAPI endpoints
-├── tests/                 # 105 pytest tests
-├── sample_kb/             # Sample knowledge base for testing
-├── config.yaml            # Default evaluation config
-├── permissions.yaml       # Tool permission schema
-└── adversarial_prompts.yaml
+│   │   ├── graph.py         # LangGraph StateGraph (dynamic per-run compilation)
+│   │   └── state.py         # AgentState TypedDict
+│   ├── tools/               # 6 evaluation tools
+│   ├── judge/               # G-Eval criteria, variance, model routing
+│   ├── report/              # JSON report compiler
+│   ├── dashboard/           # Gradio app + Plotly charts
+│   └── api/                 # FastAPI endpoints
+├── tests/                   # 115 pytest tests
+├── config.yaml              # Default evaluation config
+├── permissions.yaml         # Tool permission schema
+└── adversarial_prompts.yaml # 12 adversarial prompts across 4 attack categories
 ```
 
 ---
@@ -236,8 +270,8 @@ agentscope/
 
 ```bash
 # Required
-ANTHROPIC_API_KEY=sk-ant-...   # Primary G-Eval judge
-OPENAI_API_KEY=sk-...          # Secondary judge (inter-judge variance)
+ANTHROPIC_API_KEY=sk-ant-...   # Primary G-Eval judge + permission LLM matching
+OPENAI_API_KEY=sk-...          # Secondary judge (inter-judge variance, GPT-4o-mini)
 
 # Optional — cloud deployment only
 MODAL_TOKEN_ID=ak-...
