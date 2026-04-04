@@ -3,6 +3,7 @@ x-agentscope-common: &agentscope-common
   environment:
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     OPENAI_API_KEY: ${OPENAI_API_KEY}
+    AGENTSCOPE_RUN_STORE_BACKEND: db
     DATABASE_URL: postgresql://postgres:agentscope@postgres:5432/agentscope
   volumes:
     - ./outputs:/app/outputs

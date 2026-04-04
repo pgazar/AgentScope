@@ -8,7 +8,6 @@ from agentscope.dashboard.charts import (
     cost_chart,
     geval_chart,
     ir_chart,
-    summary_cards_html,
 )
 from agentscope.job_queue import build_run_state, enqueue_run, recover_incomplete_runs, validate_run_request
 from agentscope.logging_setup import configure_logging
@@ -20,13 +19,12 @@ configure_telemetry(service_name="agentscope-dashboard")
 
 
 def _empty_plots():
-    return (summary_cards_html(None), None, None, None, None, None)
+    return (None, None, None, None, None)
 
 
 def _plots_from_report(report: dict):
     eval_results = report["eval_results"]
     return (
-        summary_cards_html(report),
         ir_chart(eval_results["ir"] or {}),
         agent_chart(eval_results["behavior"] or {}),
         geval_chart(eval_results["geval"] or {}),
@@ -163,8 +161,6 @@ with gr.Blocks(title="AgentScope") as demo:
 
     run_btn = gr.Button("Run evaluation", variant="primary")
 
-    summary_cards = gr.HTML(value=summary_cards_html(None), label="KPI summary")
-
     with gr.Row():
         ir_plot    = gr.Plot(label="1 — IR metrics")
         agent_plot = gr.Plot(label="2 — Agentic metrics")
@@ -178,7 +174,7 @@ with gr.Blocks(title="AgentScope") as demo:
         run_evaluation,
         inputs=[agent_folder, agent_model, kb_file, gt_file,
                 eval_inputs_text, agent_type, turn_type],
-        outputs=[summary_cards, ir_plot, agent_plot, geval_plot, cost_plot, adv_plot],
+        outputs=[ir_plot, agent_plot, geval_plot, cost_plot, adv_plot],
     )
 
 

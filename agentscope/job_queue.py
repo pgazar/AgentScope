@@ -13,6 +13,7 @@ from agentscope.run_store import (
     list_runs,
     load_report,
     load_run,
+    load_state,
     report_path,
     run_state_path,
     save_state,
@@ -188,12 +189,12 @@ def recover_incomplete_runs() -> list[str]:
             log.info("recovery_marked_completed", run_id=run_id)
             continue
 
-        if not os.path.exists(record.get("state_path", run_state_path(run_id))):
+        if load_state(run_id) is None:
             update_run(
                 run_id,
                 status="failed",
                 stage="error",
-                error={"type": "MissingState", "message": "state file missing; run cannot be recovered"},
+                error={"type": "MissingState", "message": "run state missing; run cannot be recovered"},
                 finished_at=utc_now(),
             )
             log.warning("recovery_missing_state", run_id=run_id)

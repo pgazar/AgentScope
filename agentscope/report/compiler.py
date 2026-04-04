@@ -1,8 +1,8 @@
-import json
 import os
 import datetime
 
 from agentscope.orchestrator.state import AgentState
+from agentscope.run_store import report_path, save_report
 
 
 class ReportCompiler:
@@ -27,13 +27,12 @@ class ReportCompiler:
             # AgentScope's own judge token usage and Modal costs — not the evaluated agent's cost
             "agentscope_cost": {
                 "note": "G-Eval judge token usage and Modal invocation costs",
-                "saved_to": f"outputs/{run_id}_run_report.json",
+                "saved_to": report_path(run_id),
             },
         }
 
         os.makedirs("outputs", exist_ok=True)
-        with open(f"outputs/{run_id}_run_report.json", "w") as f:
-            json.dump(report, f, indent=2)
+        save_report(run_id, report)
 
         state["final_report"] = report
         return state

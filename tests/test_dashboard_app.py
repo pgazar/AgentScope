@@ -68,7 +68,7 @@ def test_dashboard_run_uses_queued_flow(monkeypatch):
         progress=progress,
     )
 
-    assert len(output) == 6
-    assert output[0].startswith("<div")
+    assert len(output) == 5
+    assert output[0] is not None
     assert progress.calls[0][1].startswith("Queued run dash-run")
     assert progress.calls[-1][1] == "Complete: dash-run"

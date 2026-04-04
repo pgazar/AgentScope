@@ -1,119 +1,166 @@
 # AgentScope
 
-> An open-source Python framework for evaluating agentic AI systems across retrieval quality, behavior, response quality, cost, and adversarial robustness.
+> An open-source Python evaluation framework for AI agents and agentic applications.
 
 [![CI](https://github.com/pgazar/AgenticScope/actions/workflows/ci.yml/badge.svg)](https://github.com/pgazar/AgenticScope/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+AgentScope runs a supported Python agent folder on evaluation inputs, captures execution evidence when available, and scores the system across scenario-dependent metrics for retrieval quality, agent behavior, response quality, cost, and adversarial robustness. It supports RAG agents, tool-using agents, multi-turn assistants, hybrid systems, and multi-agent workflows.
+
 ---
 
-## What it does
+## What AgentScope does
 
-Point AgentScope at any Python agent folder → it runs your agent on evaluation inputs → scores it across 17 metrics → renders a color-coded Gradio dashboard.
+AgentScope is designed to answer questions such as:
 
-Output-only evaluation misses the failure modes that matter most in production. AgentScope catches them at the **trace level**:
+- Did the agent retrieve the right documents?
+- Did it use tools or hand off work correctly?
+- Was the final answer helpful, faithful, and safe?
+- How expensive and slow was the run?
+- How well did the system resist adversarial prompts?
 
-| Failure mode | What it looks like | How AgentScope catches it |
+The platform uses trace-aware and output-aware evaluation. When structured traces are available, AgentScope can score failures that ordinary answer-only grading tends to miss.
+
+| Failure mode | What it looks like | How AgentScope measures it |
 |---|---|---|
-| **Ghost action** | Agent says "I sent the email" but never called the tool | Trajectory metrics — tool calls vs. final answer |
-| **Interrogation loop** | Multi-turn agent keeps asking for info the user already provided | Knowledge retention (G-Eval multi-turn) |
-| **Confident fabricator** | Fluent, confident answer built on hallucinated facts | Faithfulness + hallucination rate (G-Eval) |
-| **Unsafe compliance** | Agent follows a prompt injection or unsafe tool request | Adversarial evaluation suite |
+| Ghost action | The agent claims it called a tool but no tool event exists | trace-based behavior scoring such as `ghost_action_rate` |
+| Weak handoff | A multi-agent system routes work but loses context | `handoff_correctness` |
+| Multi-turn memory failure | A conversation agent forgets earlier turns or keeps re-asking for known information | multi-turn G-Eval metrics such as `knowledge_retention` and `turn_relevancy` |
+| Hallucinated answer | The response sounds good but is unsupported | G-Eval faithfulness / hallucination |
+| Unsafe compliance | The agent follows unsafe or hijacked instructions | adversarial robustness metrics |
+
+---
+
+## System architecture
+
+AgentScope has two entry points:
+
+- A Gradio dashboard for interactive evaluation
+- A FastAPI service for programmatic and CI-driven runs
+
+Both submit work into the same queued execution path.
+
+### Runtime flow
+
+1. A run is submitted from the dashboard or `POST /evaluate`.
+2. AgentScope validates inputs and persists run metadata in the configured run store.
+3. The serialized run state is saved in the configured run store before the worker launches.
+4. A detached worker process loads that state and executes the evaluation pipeline.
+5. The worker runs the target agent, audits trace completeness, runs the relevant evaluators, and compiles the final report.
+6. The final report is written to `outputs/<run_id>_run_report.json`.
+7. The dashboard or API client polls run status until completion.
+
+### Evaluation pipeline
+
+The active runtime path is the sequential staged pipeline in [`agentscope/pipeline_runner.py`](agentscope/pipeline_runner.py). Depending on the input scenario, it can activate:
+
+- synthetic ground-truth generation
+- IR evaluation
+- agent behavior analysis
+- adversarial evaluation
+- G-Eval response judging
+- cost and latency analysis
+- report compilation
+
+The repository also contains a LangGraph-based orchestrator in [`agentscope/orchestrator/graph.py`](agentscope/orchestrator/graph.py). Callback-based tracing works with LangChain and LangGraph target agents, but the current queued runtime is the staged pipeline above.
+
+### Persistence model
+
+AgentScope supports two persistence modes:
+
+- database-backed run metadata and state when `DATABASE_URL` is configured, which is the default Compose path
+- file-backed fallback for local development when no database is configured
+- final reports mirrored to `outputs/` as JSON artifacts
+
+In Compose, run metadata and state are stored in Postgres. Outside Compose, AgentScope can still run in file-backed mode for simple local use.
 
 ---
 
 ## Dashboard
 
-Five color-coded panels — green / orange / red based on literature-grounded thresholds:
+The dashboard exposes:
 
-```
-Panel 1: IR metrics          Panel 2: Agentic metrics
-Panel 3: Response quality    Panel 4: Cost & latency
-Panel 5: Safety & robustness
-```
+- agent path and model configuration
+- optional knowledge-base and ground-truth uploads
+- single-turn or multi-turn evaluation inputs
+- agent-type selection: `rag`, `tool_use`, `multi_agent`, `hybrid`
 
-Evaluations run in a **background job queue** — the dashboard stays responsive with a live progress bar while the pipeline executes. Each panel renders as soon as its tool finishes rather than waiting for all five.
+The current dashboard implementation shows 5 chart panels:
+  - IR metrics
+  - agentic metrics
+  - response quality
+  - cost analysis
+  - safety and robustness
 
----
+The dashboard stays responsive during execution and polls the queued run until the final report is ready. It does not stream each panel independently as stages finish; it renders the updated outputs when the completed report is available.
 
-## Metrics (17 total)
+Sample dashboard image:
 
-### IR / Retrieval
-| Metric | Description |
-|---|---|
-| Precision@k | Fraction of top-k retrieved docs that are relevant |
-| Recall@k | Fraction of all relevant docs retrieved in top-k |
-| MRR | Mean Reciprocal Rank of first relevant doc |
-| nDCG@k | Ranking quality — rewards relevant docs appearing earlier |
-| Hit Rate@k | Fraction of queries with at least one relevant doc in top-k |
-
-### Agent Behavior (Trajectory)
-| Metric | Description |
-|---|---|
-| Tool selection accuracy | Whether the agent called the expected tools |
-| Plan success | G-Eval: was the tool sequence logical and non-redundant? |
-| Step budget efficiency | How far under the step budget the agent completed |
-| Argument correctness | G-Eval: were tool call parameters valid? |
-| Convergence | Did the agent finish within the allowed step budget? |
-| Step match | Ordered/unordered comparison of actual vs. reference steps |
-| Handoff correctness | Multi-agent only: was context passed accurately? |
-| Ghost action rate | Detects claims of tool execution not backed by actual tool calls in the trace |
-
-### Response Quality (G-Eval LLM-as-judge)
-| Metric | Description |
-|---|---|
-| Task completion | Did the agent fully complete the user's task? |
-| Faithfulness | Are all claims supported by retrieved context? |
-| Hallucination rate | Does the response introduce unsupported facts? |
-| Citation accuracy | Are citations traceable to specific retrieved docs? |
-| Helpfulness | Is the response actionable and specific? |
-| Safety | Does the response avoid harmful content? |
-
-### Cost & Efficiency
-| Metric | Description |
-|---|---|
-| Cost per query | LLM token cost per evaluation query (from actual API token counts) |
-| Cost per successful task | Cost normalized by plan success rate |
-| p50 / p95 latency | Median and 95th-percentile response times |
-| Quality-cost index | G-Eval score ÷ cost per query |
+![AgentScope dashboard](sample-agentig-rag-dashboard.png)
 
 ---
 
-## Sample results — sample agentic RAG system
-Evaluated against a 4-tool ReAct RAG agent (PostgreSQL + pgvector, hybrid retrieval, Claude Haiku).
-Query: *"What was the revenue for Q3?"*
+## Metrics
 
-![AgentScope dashboard — sample agentic RAG system evaluation](sample-agentig-rag-dashboard.png)
+Metric availability depends on the scenario and on trace completeness. When a metric is not applicable or the trace is too sparse to support honest scoring, AgentScope reports `N/A` rather than inventing a zero. It does not guarantee a fixed metric count on every run.
 
-**Key finding:** plan_success=0.20 despite nDCG=1.00 — the agent retrieved the correct documents yet executed an incoherent tool sequence. This failure is invisible to output-only evaluation but surfaced immediately by AgentScope's trace-level behavioral scoring.
+### IR / retrieval
 
----
+- `Precision@k`
+- `Recall@k`
+- `MRR`
+- `nDCG`
+- `Hit Rate@k`
 
-## Tech stack
+### Agent behavior
 
-| Layer | Technology |
-|---|---|
-| Orchestration | LangGraph StateGraph (dynamic per-run graph compilation) |
-| LLM judge | G-Eval (DeepEval) + Claude Haiku/Sonnet, temp=0 |
-| Synth generation | DeepEval Synthesizer |
-| Adversarial testing | Curated YAML prompt suite (12 prompts, 4 categories) + concurrent G-Eval scoring |
-| Judge reliability | Inter-judge variance (GPT-4o-mini secondary) + KL calibration drift |
-| Permission validation | LLM semantic matching via Claude Haiku subprocess |
-| Observability | structlog (structured JSON logging) |
-| Job execution | Background job queue + subprocess-isolated agent runner |
-| Trace auditing | Automatic trace health check before scoring |
-| Dashboard | Gradio + Plotly (5 panels, progressive rendering) |
-| API | FastAPI (`/evaluate`, `/health`) |
-| Deployment | Docker Compose (local) + Modal.com (serverless judge) |
-| Config | YAML + Pydantic |
-| Testing | pytest (115 tests) + GitHub Actions CI |
+- `tool_accuracy`
+- `plan_success`
+- `step_budget_efficiency`
+- `arg_correctness`
+- `convergence`
+- `step_match`
+- `handoff_correctness` for multi-agent runs
+- `ghost_action_rate`
+
+### Response quality
+
+Single-turn runs can include:
+
+- `task_completion`
+- `faithfulness`
+- `hallucination`
+- `citation_acc`
+- `helpfulness`
+- `safety`
+
+Multi-turn runs can include:
+
+- `conversation_completeness`
+- `turn_relevancy`
+- `knowledge_retention`
+
+### Cost and efficiency
+
+- `cost_per_query`
+- `cost_per_success`
+- `p50_latency_s`
+- `p95_latency_s`
+- `quality_cost_index`
+
+### Safety and robustness
+
+- `prompt_injection_resistance`
+- `unsafe_compliance_rate`
+- `attack_success_rate`
+- `permission_violation_rate`
 
 ---
 
 ## Quick start
 
-### Local (recommended for development)
+### Local development
 
 ```bash
 git clone https://github.com/pgazar/AgenticScope
@@ -123,54 +170,70 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env   # add ANTHROPIC_API_KEY and OPENAI_API_KEY
+cp .env.example .env
+# add at least ANTHROPIC_API_KEY
+
 python -m agentscope.dashboard.app
-# → http://127.0.0.1:7860
 ```
 
-### Docker (full stack with pgvector)
+Then open [http://127.0.0.1:7860](http://127.0.0.1:7860).
+
+### FastAPI mode
 
 ```bash
-docker compose up
-# → Gradio at localhost:7860  |  FastAPI at localhost:8000
+source .venv/bin/activate
+uvicorn agentscope.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-### Run the tests
+Available endpoints:
+
+- `POST /evaluate`
+- `GET /runs/{run_id}`
+- `GET /runs/{run_id}/report`
+- `GET /health`
+
+### Docker Compose
 
 ```bash
-python -m pytest tests/ -q
-# 115 passed
+docker compose up --build
 ```
+
+The Compose stack includes:
+
+- `dashboard` on `localhost:7860`
+- `api` on `localhost:8000`
+- `postgres` with `pgvector` on `localhost:5432`
+
+By default, Compose mounts your agents directory at `/agents`. Set `AGENTS_DIR` in your environment if you want something other than the repo's `tests/` folder mounted.
+
+This is a local `dashboard + API + pgvector-enabled Postgres` stack. In this path, AgentScope stores run metadata and state in Postgres and mirrors final reports to `outputs/` as JSON artifacts.
 
 ---
 
 ## Evaluating your own agent
 
-Your agent folder needs one file:
+Your agent folder must expose a supported Python entrypoint. The most common path is a `main.py` with a callable `run(query: str) -> str`, but AgentScope also supports entrypoints such as `agent.py`, `app.py`, or `__init__.py`, with callables such as `run`, `invoke`, `agent`, or `chat`.
 
 ```python
-# your_agent/main.py
 def run(query: str) -> str:
-    # call your agent here
-    return answer
+    return "answer"
 ```
 
-Point the dashboard at it:
+### Minimum dashboard inputs
 
 | Field | Value |
 |---|---|
-| Agent folder path | `your_agent/` |
-| Agent model name | `claude-haiku-4-5-20251001` (or whatever your agent uses) |
-| Evaluation inputs | one query per line |
-| Agent type | `rag` / `tool_use` / `multi_agent` / `hybrid` |
+| Agent folder path | absolute path to the agent folder |
+| Agent model name | the model your agent actually uses |
+| Evaluation inputs | one input per line |
+| Agent type | `rag`, `tool_use`, `multi_agent`, or `hybrid` |
+| Turn type | `single` or `multi` |
 
-For **LangChain / LangGraph agents**, AgentScope injects a callback handler automatically — no code changes needed (Mode A).
+### Ground truth
 
-For **custom agents** that call the Anthropic SDK directly, add an optional `inject_trace_events(trace)` function to your `main.py` to backfill tool calls, retrieval doc keys, and token counts into the trace (Mode B). AgentScope calls this automatically after each agent run.
+For IR metrics, AgentScope can use a `ground_truth.csv` file. The dashboard auto-detects `ground_truth.csv` inside the agent folder if present.
 
-### Ground truth CSV format
-
-For IR metrics, place a `ground_truth.csv` in your agent folder (auto-detected — no upload needed):
+Example:
 
 ```csv
 question,relevant_docs
@@ -178,93 +241,213 @@ What was the revenue for Q3?,financial_q3_2024:chunk_1|sample_finance:chunk_1
 Who is the CEO?,
 ```
 
-The `relevant_docs` column is pipe-separated doc keys. Queries with no relevant docs (empty) are scored as 0.0. The legacy `answer` column (single doc key) is also supported for backward compatibility.
+### Trace capture modes
+
+AgentScope supports two broad integration styles:
+
+- LangChain / LangGraph target agents: callback-based tracing is captured automatically
+- Custom agents: optional trace backfill via `inject_trace_events(...)`
+
+If the target agent is output-only and does not emit structured trace evidence, some behavior or cost metrics may remain unscoreable by design.
+
+AgentScope expects a supported agent folder layout with an entrypoint such as `main.py`, `agent.py`, `app.py`, or `__init__.py`, and a callable such as `run`, `invoke`, `agent`, or `chat`.
 
 ---
 
-## Input scenarios
+## Example API usage
 
-| Scenario | Tools activated |
-|---|---|
-| RAG + ground truth CSV | IR evaluator + all behavior + G-Eval + cost + adversarial |
-| RAG, no ground truth | Synth gen → IR evaluator + all behavior + G-Eval + cost + adversarial |
-| Tool-use / multi-agent | Behavior + G-Eval + cost + adversarial (no IR) |
-| Regression testing | Run before and after a change, compare JSON reports in `outputs/runs/` |
-
----
-
-## How a run works
-
-1. **Dashboard** validates input and enqueues the run to `job_queue`
-2. **job_worker** picks it up and calls `pipeline_runner.execute_pipeline()`
-3. **runner_worker** (subprocess) loads and runs the agent in isolation — crashes in agent code can't affect AgentScope
-4. **trace_audit** inspects the returned trace and reports which panels will be meaningful
-5. **LangGraph pipeline** dispatches the active evaluation tools sequentially
-6. **ReportCompiler** writes `outputs/runs/{run_id}/run_report.json`
-7. **Dashboard** polls every 0.5s, renders each panel as it becomes available
-
----
-
-## API (headless / CI mode)
+Start the API:
 
 ```bash
-# Start the API
-uvicorn agentscope.api.main:app --port 8000
-
-# Trigger an evaluation
-curl -X POST http://localhost:8000/evaluate \
-  -H "Content-Type: application/json" \
-  -d '{"agent_folder": "tests/fake_agent", "agent_type": "tool_use", "eval_inputs": ["What is 2+2?"]}'
-
-# Check health
-curl http://localhost:8000/health
+uvicorn agentscope.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-The `/evaluate` endpoint returns a `run_id` immediately. The evaluation runs in the background; the report is written to `outputs/runs/{run_id}/run_report.json` when complete.
+Submit a run:
+
+```bash
+curl -X POST http://127.0.0.1:8000/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_folder": "tests/fake_multi_agent_system",
+    "agent_type": "multi_agent",
+    "turn_type": "single",
+    "agent_model": "claude-haiku-4-5-20251001",
+    "eval_inputs": [
+      "What is machine learning?",
+      "What is 25% of 480?"
+    ]
+  }'
+```
+
+Check status:
+
+```bash
+curl http://127.0.0.1:8000/runs/<run_id>
+```
+
+Fetch the final report:
+
+```bash
+curl http://127.0.0.1:8000/runs/<run_id>/report
+```
 
 ---
 
-## Project structure
+## Observability
 
+AgentScope now includes both structured logging and optional OpenTelemetry tracing.
+
+### Structured logging
+
+Structured JSON logs are wired into the main runtime components:
+
+- API
+- dashboard
+- queue
+- worker
+- pipeline
+
+Logs include component metadata and, when tracing is enabled, the current `trace_id` and `span_id`.
+
+### OpenTelemetry / OTLP
+
+OTLP tracing is optional. When enabled, AgentScope creates spans for:
+
+- API or dashboard submission
+- queue-to-worker handoff
+- worker execution
+- per-stage pipeline execution
+- target-agent execution
+
+Trace context is propagated through the persisted run state so the detached worker can continue the same trace.
+
+Minimal setup:
+
+```bash
+export AGENTSCOPE_OTEL_ENABLED=1
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 ```
-agentscope/
+
+You can also use:
+
+- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
+- `OTEL_EXPORTER_OTLP_HEADERS`
+- `OTEL_EXPORTER_OTLP_TRACES_HEADERS`
+
+If `AGENTSCOPE_OTEL_ENABLED=1` is set without an explicit endpoint, AgentScope defaults to `http://127.0.0.1:4318/v1/traces`.
+
+---
+
+## CI
+
+The GitHub Actions workflow in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) has two layers:
+
+- metric regression tests
+- a headless API quality gate
+
+### Metric regression tests
+
+The unit/regression job runs targeted pytest suites over evaluators, API, queue, dashboard, CI helpers, and telemetry.
+
+### Headless API quality gate
+
+The second job:
+
+1. starts the FastAPI server
+2. submits a real evaluation run through the API
+3. polls until the run completes
+4. fetches the report
+5. enforces configured metric thresholds
+6. uploads the report and API log as CI artifacts
+
+This gate is powered by [`agentscope/headless_ci.py`](agentscope/headless_ci.py).
+
+If `ANTHROPIC_API_KEY` is not available in CI, the headless gate skips cleanly and still emits a placeholder report artifact.
+
+At the time of writing, `pytest --collect-only` reports `118` collected tests in `tests/`.
+
+---
+
+## Project layout
+
+```text
+AgenticScope/
 ├── agentscope/
-│   ├── config.py            # Pydantic config + YAML loader
-│   ├── runner.py            # AgentRunner — loads agent, runs inputs, normalizes trace
-│   ├── runner_worker.py     # Subprocess entry point — runs agent in isolation
-│   ├── tracer.py            # LangChain BaseCallbackHandler (Mode A integration)
-│   ├── trace_audit.py       # Trace health checker — reports scoreability before eval
-│   ├── job_queue.py         # Enqueue, validate, and manage evaluation runs
-│   ├── job_worker.py        # Background worker — executes pipeline from queue
-│   ├── pipeline_runner.py   # Core pipeline execution logic
-│   ├── run_store.py         # Persistent run state and report storage
+│   ├── api/
+│   │   └── main.py
+│   ├── dashboard/
+│   │   ├── app.py
+│   │   ├── charts.py
+│   │   └── colors.py
+│   ├── judge/
 │   ├── orchestrator/
-│   │   ├── graph.py         # LangGraph StateGraph (dynamic per-run compilation)
-│   │   └── state.py         # AgentState TypedDict
-│   ├── tools/               # 6 evaluation tools
-│   ├── judge/               # G-Eval criteria, variance, model routing
-│   ├── report/              # JSON report compiler
-│   ├── dashboard/           # Gradio app + Plotly charts
-│   └── api/                 # FastAPI endpoints
-├── tests/                   # 115 pytest tests
-├── config.yaml              # Default evaluation config
-├── permissions.yaml         # Tool permission schema
-└── adversarial_prompts.yaml # 12 adversarial prompts across 4 attack categories
+│   │   ├── graph.py
+│   │   └── state.py
+│   ├── report/
+│   ├── tools/
+│   ├── headless_ci.py
+│   ├── job_queue.py
+│   ├── job_worker.py
+│   ├── logging_setup.py
+│   ├── otel.py
+│   ├── pipeline_runner.py
+│   ├── run_store.py
+│   ├── runner.py
+│   ├── runner_worker.py
+│   ├── trace_audit.py
+│   └── tracer.py
+├── tests/
+├── .github/workflows/ci.yml
+├── adversarial_prompts.yaml
+├── config.yaml
+├── docker-compose.yml
+├── permissions.yaml
+├── requirements.txt
+└── run_dashboard.sh
 ```
 
 ---
 
 ## Environment variables
 
-```bash
-# Required
-ANTHROPIC_API_KEY=sk-ant-...   # Primary G-Eval judge + permission LLM matching
-OPENAI_API_KEY=sk-...          # Secondary judge (inter-judge variance, GPT-4o-mini)
+### Required for most live evaluations
 
-# Optional — cloud deployment only
-MODAL_TOKEN_ID=ak-...
-MODAL_TOKEN_SECRET=as-...
+```bash
+ANTHROPIC_API_KEY=...
 ```
+
+### Required for judge variance paths or secondary-judge workflows
+
+```bash
+OPENAI_API_KEY=...
+```
+
+### Optional AgentScope controls
+
+```bash
+AGENTSCOPE_VARIANCE=0
+AGENTSCOPE_OTEL_ENABLED=1
+AGENTSCOPE_RUN_STORE_BACKEND=auto
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
+OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer ...
+OTEL_EXPORTER_OTLP_TRACES_HEADERS=authorization=Bearer ...
+```
+
+### Optional cloud credentials
+
+```bash
+MODAL_TOKEN_ID=...
+MODAL_TOKEN_SECRET=...
+```
+
+---
+
+## Notes
+
+- `run_dashboard.sh` is a local helper script included in the repo; tailor it to your environment before relying on it.
+- Report metrics are scenario-dependent, so not every run will populate every panel or surface the same number of metrics.
+- AgentScope is an evaluation platform for agentic systems. It can evaluate multi-agent applications, but it is not itself a general-purpose autonomous agent runtime.
 
 ---
 
