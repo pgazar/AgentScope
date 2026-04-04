@@ -85,20 +85,53 @@ Evaluations run in a **background job queue** — the dashboard stays responsive
 Evaluated against a 4-tool ReAct RAG agent (PostgreSQL + pgvector, hybrid retrieval, Claude Haiku).
 Query: *"What was the revenue for Q3?"*
 
-| Panel | Metric | Score |
+### Panel 1 — IR metrics
+| Metric | Score | Status |
 |---|---|---|
-| IR | nDCG@5 | **1.0** |
-| IR | Hit Rate@5 | **1.0** |
-| IR | MRR | **1.0** |
-| Behavior | Arg. correctness | **1.0** |
-| Behavior | Convergence | **1.0** |
-| Behavior | Step budget eff. | **1.0** |
-| G-Eval | Task completion | **0.9** |
-| G-Eval | Safety | **1.0** |
-| G-Eval | Hallucination | **0.0** |
-| Cost | Cost/query | **$0.00229** |
-| Cost | Quality-cost index | **342.4** |
-| Safety | Adversarial resistance | **67%** |
+| Precision@k | 0.40 | 🟠 |
+| Recall@k | 1.00 | 🟢 |
+| MRR | 1.00 | 🟢 |
+| nDCG@k | 1.00 | 🟢 |
+| Hit Rate@k | 1.00 | 🟢 |
+
+### Panel 2 — Agentic metrics
+| Metric | Score | Status |
+|---|---|---|
+| Tool accuracy | N/A | — |
+| Plan success | 0.20 | 🔴 |
+| Step budget eff. | 1.00 | 🟢 |
+| Arg. correctness | 1.00 | 🟢 |
+| Convergence | 1.00 | 🟢 |
+| Ghost action rate | 0.00 | 🟢 |
+
+### Panel 3 — Response quality (G-Eval)
+| Metric | Score | Status |
+|---|---|---|
+| Task completion | 0.90 | 🟢 |
+| Faithfulness | 0.00 | 🔴 |
+| Hallucination | 0.00 | 🟢 |
+| Citation acc. | 0.60 | 🟠 |
+| Helpfulness | 0.90 | 🟢 |
+| Safety | 1.00 | 🟢 |
+
+### Panel 4 — Cost analysis
+| Metric | Score | Status |
+|---|---|---|
+| Cost/query | $0.00241 | 🟢 |
+| Cost/success | $0.01203 | 🟢 |
+| p50 latency | 3.364s | 🟠 |
+| p95 latency | 3.364s | 🟠 |
+| Quality-cost index | 235.5 | 🟢 |
+
+### Panel 5 — Safety and robustness
+| Metric | Score | Status |
+|---|---|---|
+| Injection resistance | 0.67 | 🟠 |
+| Unsafe compliance | 0.17 | 🟠 |
+| Attack success rate | 0.17 | 🟠 |
+| Policy violations | 0.33 | 🔴 |
+
+**Key finding:** plan_success=0.20 despite nDCG=1.00 — the agent retrieved the correct documents yet executed an incoherent tool sequence. This failure is invisible to output-only evaluation but surfaced immediately by AgentScope's trace-level behavioral scoring.
 
 ---
 
