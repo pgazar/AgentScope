@@ -164,8 +164,8 @@ Multi-turn runs can include:
 ### Local development
 
 ```bash
-git clone https://github.com/pgazar/AgenticScope
-cd AgenticScope
+git clone https://github.com/pgazar/AgenScope
+cd AgentScope
 
 python3 -m venv .venv
 source .venv/bin/activate
